@@ -1,0 +1,28 @@
+[Unit]
+Description=Arbitrum USDC Forwarder Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Update these two paths/user for your EC2 instance
+User=ec2-user
+WorkingDirectory=/home/ec2-user/arbitrum-usdc-forwarder
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+# Load secrets from .env (systemd's EnvironmentFile understands KEY=VALUE)
+EnvironmentFile=/home/ec2-user/arbitrum-usdc-forwarder/.env
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+StandardOutput=append:/var/log/usdc-forwarder.log
+StandardError=append:/var/log/usdc-forwarder-error.log
+
+[Install]
+WantedBy=multi-user.target
