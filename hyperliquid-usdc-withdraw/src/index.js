@@ -32,7 +32,7 @@ app.post('/api/withdraw', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 // Bind to localhost only — this handles a private key and must never be
 // reachable from the network.
 app.listen(PORT, '127.0.0.1', () => {
