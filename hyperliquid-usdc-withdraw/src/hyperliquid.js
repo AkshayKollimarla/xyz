@@ -1,5 +1,6 @@
 const { ethers } = require('ethers');
 const hl = require('@nktkas/hyperliquid');
+const { SymbolConverter } = require('@nktkas/hyperliquid/utils');
 
 function getWallet() {
   const pk = process.env.PRIVATE_KEY;
@@ -14,7 +15,7 @@ function getClients() {
   const transport = new hl.HttpTransport();
   const info = new hl.InfoClient({ transport });
   const exchange = new hl.ExchangeClient({ transport, wallet });
-  return { wallet, info, exchange };
+  return { wallet, info, exchange, transport };
 }
 
 // HIP-3 dexes (e.g. "xyz" in the Hyperliquid frontend's "Perps (xyz)" row)
@@ -138,4 +139,86 @@ async function withdraw({ destination, amount }) {
   };
 }
 
-module.exports = { getStatus, withdraw };
+// Hyperliquid perp price rule: at most 5 significant figures, and at most
+// (6 - szDecimals) decimal places for perps. Integer prices are always valid.
+function roundPrice(price, szDecimals) {
+  if (Number.isInteger(price)) {
+    return String(price);
+  }
+  const maxDecimals = Math.max(0, 6 - szDecimals);
+  const fiveSigFigs = Number(price.toPrecision(5));
+  return String(Number(fiveSigFigs.toFixed(maxDecimals)));
+}
+
+async function getPositions(dex) {
+  const { wallet, info } = getClients();
+  const state = await info.clearinghouseState({ user: wallet.address, dex });
+
+  return state.assetPositions.map(({ position: p }) => ({
+    coin: p.coin,
+    size: p.szi,
+    side: Number(p.szi) < 0 ? 'short' : 'long',
+    entryPx: p.entryPx,
+    positionValue: p.positionValue,
+    unrealizedPnl: p.unrealizedPnl,
+    liquidationPx: p.liquidationPx,
+  }));
+}
+
+async function previewCloseAll(dex) {
+  const positions = await getPositions(dex);
+  const totalUnrealizedPnl = positions.reduce((sum, p) => sum + Number(p.unrealizedPnl), 0);
+  return { dex, positions, totalUnrealizedPnl: String(totalUnrealizedPnl) };
+}
+
+// Closes every open position on `dex` with reduce-only IOC orders at an
+// aggressive (slippage-padded) price, freeing their margin back into that
+// dex's withdrawable balance. Does NOT withdraw or sweep anything itself —
+// call withdraw() separately afterward once margin is freed.
+async function closeAllPositions({ dex, slippage = 0.02 }) {
+  const { wallet, info, exchange, transport } = getClients();
+
+  const [state, mids, converter] = await Promise.all([
+    info.clearinghouseState({ user: wallet.address, dex }),
+    info.allMids({ dex }),
+    SymbolConverter.create({ transport, dexs: [dex] }),
+  ]);
+
+  const orders = [];
+  for (const { position: p } of state.assetPositions) {
+    const szi = Number(p.szi);
+    if (szi === 0) continue;
+
+    const assetId = converter.getAssetId(p.coin);
+    const szDecimals = converter.getSzDecimals(p.coin);
+    if (assetId === undefined || szDecimals === undefined) {
+      throw new Error(`Could not resolve asset id for ${p.coin}`);
+    }
+
+    const mid = Number(mids[p.coin]);
+    if (!mid) {
+      throw new Error(`No live price available for ${p.coin}`);
+    }
+
+    const isBuy = szi < 0; // short position -> buy to close; long -> sell to close
+    const aggressivePrice = isBuy ? mid * (1 + slippage) : mid * (1 - slippage);
+
+    orders.push({
+      a: assetId,
+      b: isBuy,
+      p: roundPrice(aggressivePrice, szDecimals),
+      s: Math.abs(szi).toFixed(szDecimals),
+      r: true,
+      t: { limit: { tif: 'Ioc' } },
+    });
+  }
+
+  if (orders.length === 0) {
+    return { dex, closed: [], result: null };
+  }
+
+  const result = await exchange.order({ orders, grouping: 'na' });
+  return { dex, closed: orders, result };
+}
+
+module.exports = { getStatus, withdraw, previewCloseAll, closeAllPositions };

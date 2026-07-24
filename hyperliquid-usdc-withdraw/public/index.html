@@ -63,6 +63,7 @@
     - The destination address can be <b>any</b> address — Hyperliquid's withdraw action lets you specify it directly, so funds go straight there without an extra Arbitrum-to-Arbitrum hop.<br>
     - Withdrawals only pull from your main <b>Perps</b> balance. If you also hold USDC in Spot or in a HIP-3 dex listed in <span class="addr">EXTRA_PERP_DEXES</span>, this tool automatically sweeps those into Perps first, so a blank-amount withdrawal really does move everything.<br>
     - There is a small (~$1) withdrawal fee deducted automatically, and it takes a few minutes to land on Arbitrum.<br>
+    - If a HIP-3 dex has open positions, their margin isn't withdrawable until closed — this tool can show them and place reduce-only market orders to close them all, freeing that margin. This is separate from withdrawing and requires typing a confirmation phrase, since it realizes P&amp;L and executes real trades.<br>
     - Double-check the destination address before confirming. This is irreversible.
   </div>
 
@@ -72,6 +73,8 @@
     <div class="spot-note" id="spotNote"></div>
     <button id="btnRefresh" class="secondary">Refresh</button>
   </div>
+
+  <div class="card" id="positionsCard" style="display:none;"></div>
 
   <div class="card">
     <label>Destination Address</label>
@@ -128,8 +131,86 @@ async function refresh() {
     if (data.defaultDestination && !el('destAddr').value) {
       el('destAddr').value = data.defaultDestination;
     }
+
+    await loadPositions((data.extraPerpDexes || []).filter((d) => !d.error).map((d) => d.name));
   } catch (e) {
     el('balances').textContent = 'Failed to load status: ' + e.message;
+  }
+}
+
+async function loadPositions(dexNames) {
+  const card = el('positionsCard');
+  if (dexNames.length === 0) {
+    card.style.display = 'none';
+    card.innerHTML = '';
+    return;
+  }
+
+  const perDex = await Promise.all(
+    dexNames.map((dex) => fetch('/api/positions?dex=' + encodeURIComponent(dex)).then((r) => r.json()))
+  );
+
+  let html = '';
+  perDex.forEach((preview) => {
+    if (preview.error || !preview.positions || preview.positions.length === 0) return;
+    html += `<div style="margin-bottom:8px;"><b>Open Positions (${preview.dex})</b></div>`;
+    preview.positions.forEach((p) => {
+      const pnlColor = Number(p.unrealizedPnl) < 0 ? 'var(--danger)' : 'var(--ok)';
+      html +=
+        `<div style="font-size:13px; margin-bottom:4px;">` +
+        `${p.coin} — ${p.side} ${Math.abs(Number(p.size))} @ ${p.entryPx}, value $${Number(p.positionValue).toFixed(2)}, ` +
+        `uPnL <span style="color:${pnlColor};">$${Number(p.unrealizedPnl).toFixed(2)}</span></div>`;
+    });
+    html +=
+      `<div style="font-size:13px; margin-top:6px;">Total unrealized P&amp;L: ` +
+      `<span style="color:${Number(preview.totalUnrealizedPnl) < 0 ? 'var(--danger)' : 'var(--ok)'};">$${Number(preview.totalUnrealizedPnl).toFixed(2)}</span></div>` +
+      `<button class="danger btn-flat-all" data-dex="${preview.dex}">Flat All Positions (${preview.dex})</button>`;
+  });
+
+  if (!html) {
+    card.style.display = 'none';
+    card.innerHTML = '';
+    return;
+  }
+
+  card.style.display = 'block';
+  card.innerHTML = html;
+  card.querySelectorAll('.btn-flat-all').forEach((btn) => {
+    btn.addEventListener('click', () => flatAllPositions(btn.dataset.dex));
+  });
+}
+
+async function flatAllPositions(dex) {
+  const preview = await fetch('/api/positions?dex=' + encodeURIComponent(dex)).then((r) => r.json());
+  if (preview.error) { alert('Failed to load positions: ' + preview.error); return; }
+  if (!preview.positions.length) { alert('No open positions on ' + dex + '.'); return; }
+
+  const lines = preview.positions
+    .map((p) => `  ${p.coin}: close ${p.side} ${Math.abs(Number(p.size))} (uPnL $${Number(p.unrealizedPnl).toFixed(2)})`)
+    .join('\n');
+  const confirmMsg =
+    `This will place reduce-only market orders to CLOSE ALL open positions on "${dex}":\n\n${lines}\n\n` +
+    `Total unrealized P&L to be realized: $${Number(preview.totalUnrealizedPnl).toFixed(2)}\n\n` +
+    `This is irreversible and executes real trades. Type CLOSE (all caps) to confirm:`;
+  const typed = window.prompt(confirmMsg);
+  if (typed !== 'CLOSE') {
+    log('Flat-all cancelled (confirmation text did not match).', 'warn');
+    return;
+  }
+
+  log(`Closing all positions on ${dex}...`);
+  try {
+    const res = await fetch('/api/close-positions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dex }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    log(`Close orders submitted for ${dex}: ${data.closed.length} order(s).`, 'ok');
+    await refresh();
+  } catch (e) {
+    log('Error closing positions: ' + e.message, 'err');
   }
 }
 

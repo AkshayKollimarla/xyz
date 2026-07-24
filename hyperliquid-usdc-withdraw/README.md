@@ -58,6 +58,26 @@ sweeps any HIP-3 dex balance listed in `EXTRA_PERP_DEXES` into main Perps
 too (`sendAsset`, dex-to-dex) — so a blank-amount withdrawal really does
 move your entire account, no manual step needed.
 
+Note: a dex's balance can only be swept if it's actually **withdrawable**.
+Margin backing open positions on that dex is not — see below.
+
+## Closing positions (freeing locked margin)
+
+If a HIP-3 dex has open positions, part of its balance is locked as margin
+and won't show up as withdrawable (or move in a sweep) until those
+positions are closed. When any `EXTRA_PERP_DEXES` dex has open positions,
+the page shows an "Open Positions" panel with each position's side, size,
+entry price, and unrealized P&L, plus a **Flat All Positions** button per
+dex.
+
+Clicking it does **not** close anything immediately — it shows every
+position that will be closed and the total P&L that will be realized, and
+requires typing `CLOSE` into a prompt to proceed. Confirming places
+reduce-only IOC (immediate-or-cancel) orders at a slippage-padded price for
+each position, which closes them and frees their margin back into that
+dex's withdrawable balance. It does not withdraw anything itself — run a
+withdrawal afterward to move the newly-freed balance out.
+
 ## Security notes
 
 - The private key is read once from `.env` on the server process and never
