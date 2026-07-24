@@ -45,12 +45,17 @@ Open `http://127.0.0.1:3001`. The server only ever binds to localhost — it
 is never reachable from the network.
 
 The page shows:
-- Your account address and current withdrawable (Perps) balance
-- Your Spot USDC balance, if any — withdrawals pull from the **Perps**
-  balance specifically, so if your USDC is sitting in Spot, use the
-  "Move Spot USDC to Perps" button first to consolidate it
-- A form to withdraw a specific amount (or the full withdrawable balance) to
-  any destination address, with a confirmation prompt before submitting
+- Your account address, current withdrawable (Perps) balance, Spot USDC
+  balance, and any HIP-3 dex balances listed in `EXTRA_PERP_DEXES`
+- A form to withdraw a specific amount (or your entire balance, if left
+  blank) to any destination address, with a confirmation prompt before
+  submitting
+
+Withdrawals only pull from the main **Perps** balance. If you also hold
+Spot USDC, every withdrawal automatically sweeps it into Perps first, so a
+blank-amount withdrawal really does move everything — no manual step
+needed. HIP-3 dex balances (`EXTRA_PERP_DEXES`) are shown for visibility
+but are **not** included in the automatic sweep.
 
 ## Security notes
 

@@ -17,11 +17,28 @@ function getClients() {
   return { wallet, info, exchange };
 }
 
+// HIP-3 dexes (e.g. "xyz" in the Hyperliquid frontend's "Perps (xyz)" row)
+// are separate balance buckets from the main Perps dex. List any dex names
+// your account uses in EXTRA_PERP_DEXES (comma-separated) to see them here.
+function getExtraDexNames() {
+  return (process.env.EXTRA_PERP_DEXES || '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
 async function getStatus() {
   const { wallet, info } = getClients();
-  const [perp, spot] = await Promise.all([
+  const extraDexNames = getExtraDexNames();
+
+  const [perp, spot, ...extraPerps] = await Promise.all([
     info.clearinghouseState({ user: wallet.address }),
     info.spotClearinghouseState({ user: wallet.address }),
+    // A typo'd or non-existent dex name shouldn't break the whole status
+    // call — surface it as an error string for that dex instead.
+    ...extraDexNames.map((dex) =>
+      info.clearinghouseState({ user: wallet.address, dex }).catch((err) => ({ error: err.message }))
+    ),
   ]);
   const spotUsdc = spot.balances.find((b) => b.coin === 'USDC');
 
@@ -29,6 +46,11 @@ async function getStatus() {
     address: wallet.address,
     perpWithdrawable: perp.withdrawable,
     spotUsdc: spotUsdc ? spotUsdc.total : '0',
+    extraPerpDexes: extraDexNames.map((name, i) => ({
+      name,
+      withdrawable: extraPerps[i].error ? null : extraPerps[i].withdrawable,
+      error: extraPerps[i].error || null,
+    })),
     defaultDestination: process.env.DESTINATION_ADDRESS || null,
   };
 }

@@ -102,16 +102,21 @@ async function refresh() {
   el('balances').textContent = 'Loading account status…';
   el('addrLine').textContent = '';
   el('spotNote').style.display = 'none';
-  el('btnConsolidate').style.display = 'none';
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     lastStatus = data;
 
-    el('balances').innerHTML =
+    let html =
       `Withdrawable (Perps): <span class="val">${data.perpWithdrawable} USDC</span><br>` +
       `Spot balance: <span class="val">${data.spotUsdc} USDC</span>`;
+    (data.extraPerpDexes || []).forEach((d) => {
+      html += d.error
+        ? `<br>Perps (${d.name}): <span class="val" style="color:var(--danger);">error — ${d.error}</span>`
+        : `<br>Perps (${d.name}): <span class="val">${d.withdrawable} USDC</span>`;
+    });
+    el('balances').innerHTML = html;
     el('addrLine').textContent = 'Account: ' + data.address;
 
     if (Number(data.spotUsdc) > 0) {
