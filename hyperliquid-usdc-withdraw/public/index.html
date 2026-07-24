@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hyperliquid USDC Withdraw</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8eb;
+    --muted: #9aa2b1; --accent: #4f8cff; --danger: #e5484d; --warn: #f5a524; --ok: #2fbf71;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px; display: flex; justify-content: center;
+  }
+  .wrap { max-width: 640px; width: 100%; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .banner {
+    background: #2a1a12; border: 1px solid var(--warn); color: #ffd699;
+    padding: 12px 14px; border-radius: 8px; font-size: 13px; line-height: 1.5; margin-bottom: 20px;
+  }
+  .banner b { color: #fff; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; margin-top: 12px; }
+  label:first-child { margin-top: 0; }
+  input[type=text] {
+    width: 100%; background: #0d0f13; border: 1px solid var(--border); color: var(--text);
+    padding: 10px 12px; border-radius: 6px; font-size: 13px; font-family: ui-monospace, Consolas, monospace;
+  }
+  input:focus { outline: 1px solid var(--accent); }
+  button {
+    background: var(--accent); color: #fff; border: none; padding: 10px 16px; border-radius: 6px;
+    font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 14px; margin-right: 8px;
+  }
+  button.secondary { background: #2a2f3a; }
+  button.danger { background: var(--danger); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .balances { font-size: 13px; margin-top: 10px; line-height: 1.9; }
+  .balances span.val { font-family: ui-monospace, Consolas, monospace; color: #fff; }
+  .log {
+    font-family: ui-monospace, Consolas, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;
+    background: #0d0f13; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px;
+    max-height: 260px; overflow-y: auto; margin-top: 10px; color: var(--muted);
+  }
+  .log .ok { color: var(--ok); }
+  .log .err { color: var(--danger); }
+  .log .warn { color: var(--warn); }
+  .addr { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
+  .spot-note { display: none; margin-top: 10px; font-size: 12px; color: var(--warn); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Hyperliquid USDC Withdraw</h1>
+  <div class="subtitle">Local-only tool. Your private key lives only in this machine's <span class="addr">.env</span> file, loaded server-side — it is never sent over the network.</div>
+
+  <div class="banner">
+    <b>Read before use:</b><br>
+    - Run this only on your own machine (<span class="addr">npm start</span>, then open <span class="addr">http://127.0.0.1:3000</span>). The server binds to localhost only.<br>
+    - The private key must be your Hyperliquid <b>master account</b> key (the one behind MetaMask) — API/agent wallets cannot authorize withdrawals.<br>
+    - The destination address can be <b>any</b> address — Hyperliquid's withdraw action lets you specify it directly, so funds go straight there without an extra Arbitrum-to-Arbitrum hop.<br>
+    - There is a small (~$1) withdrawal fee deducted automatically, and it takes a few minutes to land on Arbitrum.<br>
+    - Double-check the destination address before confirming. This is irreversible.
+  </div>
+
+  <div class="card">
+    <div class="balances" id="balances">Loading account status…</div>
+    <div class="addr" id="addrLine"></div>
+    <div class="spot-note" id="spotNote"></div>
+    <button id="btnRefresh" class="secondary">Refresh</button>
+    <button id="btnConsolidate" class="secondary" style="display:none;">Move Spot USDC to Perps</button>
+  </div>
+
+  <div class="card">
+    <label>Destination Address</label>
+    <input type="text" id="destAddr" placeholder="0x...">
+
+    <label>Amount (USDC) — leave blank to withdraw the full withdrawable balance</label>
+    <input type="text" id="amount" placeholder="e.g. 100">
+
+    <button id="btnWithdraw" class="danger">Withdraw</button>
+
+    <div class="log" id="log"></div>
+  </div>
+</div>
+
+<script>
+const el = (id) => document.getElementById(id);
+function log(msg, cls) {
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  el('log').appendChild(line);
+  el('log').scrollTop = el('log').scrollHeight;
+}
+
+let lastStatus = null;
+
+async function refresh() {
+  el('balances').textContent = 'Loading account status…';
+  el('addrLine').textContent = '';
+  el('spotNote').style.display = 'none';
+  el('btnConsolidate').style.display = 'none';
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    lastStatus = data;
+
+    el('balances').innerHTML =
+      `Withdrawable (Perps): <span class="val">${data.perpWithdrawable} USDC</span><br>` +
+      `Spot balance: <span class="val">${data.spotUsdc} USDC</span>`;
+    el('addrLine').textContent = 'Account: ' + data.address;
+
+    if (Number(data.spotUsdc) > 0) {
+      el('spotNote').style.display = 'block';
+      el('spotNote').textContent =
+        'You have USDC in your Spot balance. Withdrawals only pull from the Perps balance — move it over first if you want to include it.';
+      el('btnConsolidate').style.display = 'inline-block';
+    }
+
+    if (data.defaultDestination && !el('destAddr').value) {
+      el('destAddr').value = data.defaultDestination;
+    }
+  } catch (e) {
+    el('balances').textContent = 'Failed to load status: ' + e.message;
+  }
+}
+
+el('btnRefresh').addEventListener('click', refresh);
+
+el('btnConsolidate').addEventListener('click', async () => {
+  el('btnConsolidate').disabled = true;
+  try {
+    log('Moving Spot USDC to Perps...');
+    const res = await fetch('/api/consolidate', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    log(`Moved ${data.moved} USDC to Perps.`, 'ok');
+    await refresh();
+  } catch (e) {
+    log('Error: ' + e.message, 'err');
+  } finally {
+    el('btnConsolidate').disabled = false;
+  }
+});
+
+el('btnWithdraw').addEventListener('click', async () => {
+  const destination = el('destAddr').value.trim();
+  const amount = el('amount').value.trim();
+
+  if (!destination) { alert('Enter a destination address.'); return; }
+
+  const amountLabel = amount || `the full withdrawable balance (${lastStatus ? lastStatus.perpWithdrawable : '?'} USDC)`;
+  const confirmMsg =
+    `Withdraw ${amountLabel} from Hyperliquid\n` +
+    `To: ${destination}\n\n` +
+    `This is irreversible. Continue?`;
+  if (!window.confirm(confirmMsg)) return;
+
+  el('btnWithdraw').disabled = true;
+  try {
+    log('Submitting withdrawal...');
+    const res = await fetch('/api/withdraw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destination, amount: amount || undefined }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    log(`Withdrawal submitted: ${data.amount} USDC to ${data.destination}`, 'ok');
+    log('It should land on Arbitrum in a few minutes.', 'warn');
+    await refresh();
+  } catch (e) {
+    log('Error: ' + e.message, 'err');
+  } finally {
+    el('btnWithdraw').disabled = false;
+  }
+});
+
+refresh();
+</script>
+</body>
+</html>

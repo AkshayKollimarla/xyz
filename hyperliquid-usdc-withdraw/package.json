@@ -1,0 +1,16 @@
+{
+  "name": "hyperliquid-usdc-withdraw",
+  "version": "1.0.0",
+  "description": "Local-only UI that withdraws USDC directly from your Hyperliquid account to any destination address on Arbitrum, in a single signed action.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@nktkas/hyperliquid": "^0.32.2",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4",
+    "express": "^4.19.2"
+  },
+  "license": "MIT"
+}
