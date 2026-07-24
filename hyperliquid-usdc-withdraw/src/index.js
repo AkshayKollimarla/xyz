@@ -1,7 +1,7 @@
 require('dotenv').config();
 const path = require('path');
 const express = require('express');
-const { getStatus, consolidateToPerp, withdraw } = require('./hyperliquid');
+const { getStatus, withdraw } = require('./hyperliquid');
 
 const app = express();
 app.use(express.json());
@@ -10,14 +10,6 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 app.get('/api/status', async (req, res) => {
   try {
     res.json(await getStatus());
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/consolidate', async (req, res) => {
-  try {
-    res.json(await consolidateToPerp());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

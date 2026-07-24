@@ -61,6 +61,7 @@
     - Run this only on your own machine (<span class="addr">npm start</span>, then open <span class="addr">http://127.0.0.1:3001</span>). The server binds to localhost only.<br>
     - The private key must be your Hyperliquid <b>master account</b> key (the one behind MetaMask) — API/agent wallets cannot authorize withdrawals.<br>
     - The destination address can be <b>any</b> address — Hyperliquid's withdraw action lets you specify it directly, so funds go straight there without an extra Arbitrum-to-Arbitrum hop.<br>
+    - Withdrawals only pull from your <b>Perps</b> balance. If you also hold USDC in Spot, this tool automatically sweeps it into Perps first, so a blank-amount withdrawal really does move everything.<br>
     - There is a small (~$1) withdrawal fee deducted automatically, and it takes a few minutes to land on Arbitrum.<br>
     - Double-check the destination address before confirming. This is irreversible.
   </div>
@@ -70,14 +71,13 @@
     <div class="addr" id="addrLine"></div>
     <div class="spot-note" id="spotNote"></div>
     <button id="btnRefresh" class="secondary">Refresh</button>
-    <button id="btnConsolidate" class="secondary" style="display:none;">Move Spot USDC to Perps</button>
   </div>
 
   <div class="card">
     <label>Destination Address</label>
     <input type="text" id="destAddr" placeholder="0x...">
 
-    <label>Amount (USDC) — leave blank to withdraw the full withdrawable balance</label>
+    <label>Amount (USDC) — leave blank to withdraw your entire balance (Spot + Perps)</label>
     <input type="text" id="amount" placeholder="e.g. 100">
 
     <button id="btnWithdraw" class="danger">Withdraw</button>
@@ -117,8 +117,7 @@ async function refresh() {
     if (Number(data.spotUsdc) > 0) {
       el('spotNote').style.display = 'block';
       el('spotNote').textContent =
-        'You have USDC in your Spot balance. Withdrawals only pull from the Perps balance — move it over first if you want to include it.';
-      el('btnConsolidate').style.display = 'inline-block';
+        `You have ${data.spotUsdc} USDC in Spot — it will be swept into Perps automatically when you withdraw.`;
     }
 
     if (data.defaultDestination && !el('destAddr').value) {
@@ -131,29 +130,17 @@ async function refresh() {
 
 el('btnRefresh').addEventListener('click', refresh);
 
-el('btnConsolidate').addEventListener('click', async () => {
-  el('btnConsolidate').disabled = true;
-  try {
-    log('Moving Spot USDC to Perps...');
-    const res = await fetch('/api/consolidate', { method: 'POST' });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    log(`Moved ${data.moved} USDC to Perps.`, 'ok');
-    await refresh();
-  } catch (e) {
-    log('Error: ' + e.message, 'err');
-  } finally {
-    el('btnConsolidate').disabled = false;
-  }
-});
-
 el('btnWithdraw').addEventListener('click', async () => {
   const destination = el('destAddr').value.trim();
   const amount = el('amount').value.trim();
 
   if (!destination) { alert('Enter a destination address.'); return; }
 
-  const amountLabel = amount || `the full withdrawable balance (${lastStatus ? lastStatus.perpWithdrawable : '?'} USDC)`;
+  let amountLabel = amount;
+  if (!amountLabel) {
+    const total = lastStatus ? Number(lastStatus.perpWithdrawable) + Number(lastStatus.spotUsdc) : null;
+    amountLabel = `your entire balance (~${total !== null ? total : '?'} USDC, Spot + Perps)`;
+  }
   const confirmMsg =
     `Withdraw ${amountLabel} from Hyperliquid\n` +
     `To: ${destination}\n\n` +
@@ -170,6 +157,9 @@ el('btnWithdraw').addEventListener('click', async () => {
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
+    if (data.movedFromSpot && Number(data.movedFromSpot) > 0) {
+      log(`Swept ${data.movedFromSpot} USDC from Spot into Perps first.`, 'ok');
+    }
     log(`Withdrawal submitted: ${data.amount} USDC to ${data.destination}`, 'ok');
     log('It should land on Arbitrum in a few minutes.', 'warn');
     await refresh();

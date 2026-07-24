@@ -33,20 +33,22 @@ async function getStatus() {
   };
 }
 
-// Hyperliquid withdrawals pull from the Perps USDC balance. If USDC is
-// sitting in the Spot balance instead, it needs to be moved to Perps first.
-async function consolidateToPerp() {
-  const { exchange, info, wallet } = getClients();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Hyperliquid withdrawals only ever pull from the Perps USDC balance, not
+// Spot. So a "withdraw everything" needs to sweep Spot -> Perps first.
+async function sweepSpotToPerp(exchange, info, wallet) {
   const spot = await info.spotClearinghouseState({ user: wallet.address });
   const spotUsdc = spot.balances.find((b) => b.coin === 'USDC');
-  const amount = spotUsdc ? spotUsdc.total : '0';
+  const spotAmount = spotUsdc ? spotUsdc.total : '0';
 
-  if (Number(amount) <= 0) {
-    return { moved: '0' };
+  if (Number(spotAmount) <= 0) {
+    return '0';
   }
 
-  await exchange.usdClassTransfer({ amount, toPerp: true });
-  return { moved: amount };
+  await exchange.usdClassTransfer({ amount: spotAmount, toPerp: true });
+  await sleep(1500); // give the transfer a moment to settle before reading the new Perps balance
+  return spotAmount;
 }
 
 async function withdraw({ destination, amount }) {
@@ -56,6 +58,8 @@ async function withdraw({ destination, amount }) {
   if (!dest) {
     throw new Error('No destination address provided or configured in .env');
   }
+
+  const movedFromSpot = await sweepSpotToPerp(exchange, info, wallet);
 
   let amt = amount;
   if (!amt) {
@@ -67,7 +71,7 @@ async function withdraw({ destination, amount }) {
   }
 
   const result = await exchange.withdraw3({ destination: dest, amount: amt });
-  return { destination: dest, amount: amt, result };
+  return { destination: dest, amount: amt, movedFromSpot, result };
 }
 
-module.exports = { getStatus, consolidateToPerp, withdraw };
+module.exports = { getStatus, withdraw };
