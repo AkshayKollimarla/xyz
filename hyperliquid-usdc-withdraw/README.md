@@ -34,6 +34,7 @@ cp .env.example .env
 Edit `.env`:
 - `PRIVATE_KEY` — your Hyperliquid master account private key
 - `DESTINATION_ADDRESS` — default destination (optional; can be overridden per-withdrawal in the UI)
+- `EXTRA_PERP_DEXES` — optional, comma-separated HIP-3 dex names (e.g. `xyz`) if your account holds balance in one, shown as `Perps (<name>)` in the Hyperliquid frontend
 
 ## Run
 
@@ -51,11 +52,11 @@ The page shows:
   blank) to any destination address, with a confirmation prompt before
   submitting
 
-Withdrawals only pull from the main **Perps** balance. If you also hold
-Spot USDC, every withdrawal automatically sweeps it into Perps first, so a
-blank-amount withdrawal really does move everything — no manual step
-needed. HIP-3 dex balances (`EXTRA_PERP_DEXES`) are shown for visibility
-but are **not** included in the automatic sweep.
+Withdrawals only pull from the main **Perps** balance. Every withdrawal
+automatically sweeps Spot USDC into Perps first (`usdClassTransfer`), and
+sweeps any HIP-3 dex balance listed in `EXTRA_PERP_DEXES` into main Perps
+too (`sendAsset`, dex-to-dex) — so a blank-amount withdrawal really does
+move your entire account, no manual step needed.
 
 ## Security notes
 

@@ -61,7 +61,7 @@
     - Run this only on your own machine (<span class="addr">npm start</span>, then open <span class="addr">http://127.0.0.1:3001</span>). The server binds to localhost only.<br>
     - The private key must be your Hyperliquid <b>master account</b> key (the one behind MetaMask) — API/agent wallets cannot authorize withdrawals.<br>
     - The destination address can be <b>any</b> address — Hyperliquid's withdraw action lets you specify it directly, so funds go straight there without an extra Arbitrum-to-Arbitrum hop.<br>
-    - Withdrawals only pull from your <b>Perps</b> balance. If you also hold USDC in Spot, this tool automatically sweeps it into Perps first, so a blank-amount withdrawal really does move everything.<br>
+    - Withdrawals only pull from your main <b>Perps</b> balance. If you also hold USDC in Spot or in a HIP-3 dex listed in <span class="addr">EXTRA_PERP_DEXES</span>, this tool automatically sweeps those into Perps first, so a blank-amount withdrawal really does move everything.<br>
     - There is a small (~$1) withdrawal fee deducted automatically, and it takes a few minutes to land on Arbitrum.<br>
     - Double-check the destination address before confirming. This is irreversible.
   </div>
@@ -143,8 +143,14 @@ el('btnWithdraw').addEventListener('click', async () => {
 
   let amountLabel = amount;
   if (!amountLabel) {
-    const total = lastStatus ? Number(lastStatus.perpWithdrawable) + Number(lastStatus.spotUsdc) : null;
-    amountLabel = `your entire balance (~${total !== null ? total : '?'} USDC, Spot + Perps)`;
+    let total = null;
+    if (lastStatus) {
+      total = Number(lastStatus.perpWithdrawable) + Number(lastStatus.spotUsdc);
+      (lastStatus.extraPerpDexes || []).forEach((d) => {
+        if (!d.error) total += Number(d.withdrawable);
+      });
+    }
+    amountLabel = `your entire balance (~${total !== null ? total : '?'} USDC, across Spot/Perps/any HIP-3 dexes)`;
   }
   const confirmMsg =
     `Withdraw ${amountLabel} from Hyperliquid\n` +
@@ -165,6 +171,9 @@ el('btnWithdraw').addEventListener('click', async () => {
     if (data.movedFromSpot && Number(data.movedFromSpot) > 0) {
       log(`Swept ${data.movedFromSpot} USDC from Spot into Perps first.`, 'ok');
     }
+    Object.entries(data.movedFromDexes || {}).forEach(([dex, amt]) => {
+      log(`Swept ${amt} USDC from Perps (${dex}) into main Perps first.`, 'ok');
+    });
     log(`Withdrawal submitted: ${data.amount} USDC to ${data.destination}`, 'ok');
     log('It should land on Arbitrum in a few minutes.', 'warn');
     await refresh();

@@ -57,20 +57,56 @@ async function getStatus() {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Hyperliquid withdrawals only ever pull from the Perps USDC balance, not
-// Spot. So a "withdraw everything" needs to sweep Spot -> Perps first.
-async function sweepSpotToPerp(exchange, info, wallet) {
+// The USDC token identifier needed for sendAsset (dex-to-dex transfers) is
+// not a fixed constant — resolve it live rather than hardcoding it, since
+// even Hyperliquid's own SDK doc examples show a stale value.
+async function getUsdcSpotToken(info) {
+  const meta = await info.spotMeta();
+  const usdc = meta.tokens.find((t) => t.name === 'USDC');
+  if (!usdc) {
+    throw new Error('Could not resolve USDC token id from spotMeta');
+  }
+  return `USDC:${usdc.tokenId}`;
+}
+
+// Hyperliquid withdrawals only ever pull from the main Perps USDC balance —
+// not Spot, and not any HIP-3 dex (EXTRA_PERP_DEXES) balance. So a "withdraw
+// everything" needs to sweep both of those into main Perps first.
+async function sweepToMainPerp(exchange, info, wallet) {
+  const moved = { spot: '0', dexes: {} };
+
   const spot = await info.spotClearinghouseState({ user: wallet.address });
   const spotUsdc = spot.balances.find((b) => b.coin === 'USDC');
   const spotAmount = spotUsdc ? spotUsdc.total : '0';
-
-  if (Number(spotAmount) <= 0) {
-    return '0';
+  if (Number(spotAmount) > 0) {
+    await exchange.usdClassTransfer({ amount: spotAmount, toPerp: true });
+    moved.spot = spotAmount;
   }
 
-  await exchange.usdClassTransfer({ amount: spotAmount, toPerp: true });
-  await sleep(1500); // give the transfer a moment to settle before reading the new Perps balance
-  return spotAmount;
+  const extraDexNames = getExtraDexNames();
+  if (extraDexNames.length > 0) {
+    const usdcToken = await getUsdcSpotToken(info);
+    for (const dex of extraDexNames) {
+      const state = await info.clearinghouseState({ user: wallet.address, dex });
+      const dexAmount = state.withdrawable;
+      if (Number(dexAmount) > 0) {
+        await exchange.sendAsset({
+          destination: wallet.address,
+          sourceDex: dex,
+          destinationDex: '',
+          token: usdcToken,
+          amount: dexAmount,
+        });
+        moved.dexes[dex] = dexAmount;
+      }
+    }
+  }
+
+  if (Number(moved.spot) > 0 || Object.keys(moved.dexes).length > 0) {
+    await sleep(1500); // give transfers a moment to settle before reading the new Perps balance
+  }
+
+  return moved;
 }
 
 async function withdraw({ destination, amount }) {
@@ -81,7 +117,7 @@ async function withdraw({ destination, amount }) {
     throw new Error('No destination address provided or configured in .env');
   }
 
-  const movedFromSpot = await sweepSpotToPerp(exchange, info, wallet);
+  const moved = await sweepToMainPerp(exchange, info, wallet);
 
   let amt = amount;
   if (!amt) {
@@ -93,7 +129,13 @@ async function withdraw({ destination, amount }) {
   }
 
   const result = await exchange.withdraw3({ destination: dest, amount: amt });
-  return { destination: dest, amount: amt, movedFromSpot, result };
+  return {
+    destination: dest,
+    amount: amt,
+    movedFromSpot: moved.spot,
+    movedFromDexes: moved.dexes,
+    result,
+  };
 }
 
 module.exports = { getStatus, withdraw };
