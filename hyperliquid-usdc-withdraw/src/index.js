@@ -1,6 +1,10 @@
 require('dotenv').config();
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
+const session = require('express-session');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 const {
   getStatus,
   withdraw,
@@ -12,9 +16,96 @@ const {
   getAccounts,
 } = require('./hyperliquid');
 
+const APP_PASSWORD = process.env.APP_PASSWORD;
+const SESSION_SECRET = process.env.SESSION_SECRET;
+
+if (!APP_PASSWORD || APP_PASSWORD.length < 8) {
+  throw new Error(
+    'APP_PASSWORD must be set in .env to a strong password (8+ chars) before starting. ' +
+    'This gates every action in the app — required once this is reachable from outside your own machine.'
+  );
+}
+if (!SESSION_SECRET || SESSION_SECRET.length < 32) {
+  throw new Error(
+    'SESSION_SECRET must be set in .env to a long random value before starting. ' +
+    "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
+  );
+}
+
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
 const app = express();
+// Required so express-session/rate-limit see the real client IP and scheme
+// when running behind Caddy/nginx, not the proxy's own loopback address.
+app.set('trust proxy', 1);
+app.use(helmet());
 app.use(express.json());
+
+app.use(session({
+  name: 'hlw.sid',
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    // Secure cookies require HTTPS. Only enabled in production (behind
+    // Caddy's TLS) — off for local http://127.0.0.1 development, where
+    // there is no HTTPS to require.
+    secure: IS_PRODUCTION,
+    sameSite: 'strict',
+    maxAge: 12 * 60 * 60 * 1000, // 12h
+  },
+}));
+
+function timingSafeEqualStrings(a, b) {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  // Comparing different-length buffers directly would leak length via
+  // timing; pad to a fixed size before the constant-time comparison.
+  const len = Math.max(bufA.length, bufB.length, 32);
+  const paddedA = Buffer.alloc(len);
+  const paddedB = Buffer.alloc(len);
+  bufA.copy(paddedA);
+  bufB.copy(paddedB);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(paddedA, paddedB);
+}
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+});
+
+app.post('/api/login', loginLimiter, (req, res) => {
+  const { password } = req.body || {};
+  if (typeof password === 'string' && timingSafeEqualStrings(password, APP_PASSWORD)) {
+    req.session.authenticated = true;
+    return res.json({ ok: true });
+  }
+  res.status(401).json({ error: 'Incorrect password' });
+});
+
+app.post('/api/logout', (req, res) => {
+  req.session.destroy(() => res.json({ ok: true }));
+});
+
+app.get('/api/session', (req, res) => {
+  res.json({ authenticated: Boolean(req.session && req.session.authenticated) });
+});
+
+function requireAuth(req, res, next) {
+  if (req.session && req.session.authenticated) {
+    return next();
+  }
+  res.status(401).json({ error: 'Not authenticated' });
+}
+
+// The static shell (HTML/CSS/JS) itself has no secrets in it — only the API
+// routes below, which every one of, are gated by requireAuth.
 app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use('/api', requireAuth);
 
 function findAccount(accountId) {
   const accounts = getAccounts();
@@ -98,8 +189,9 @@ app.get('/api/withdraw-arrival', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-// Bind to localhost only — this handles private keys and must never be
-// reachable from the network.
+// Always bind to loopback only, even in production — a public reverse
+// proxy (Caddy) is what actually faces the internet and forwards here.
+// This process should never be directly reachable from any network.
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Hyperliquid USDC withdraw UI: http://127.0.0.1:${PORT} (localhost only)`);
 });
