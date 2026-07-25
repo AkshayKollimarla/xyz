@@ -33,6 +33,13 @@ if (!SESSION_SECRET || SESSION_SECRET.length < 32) {
 }
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+// Defaults to HTTPS-only cookies in production (correct behind a TLS
+// reverse proxy). Set COOKIE_SECURE=false to explicitly allow the app to
+// work over plain HTTP instead — only do this if you understand that the
+// password and session cookie then travel in plaintext over the network.
+const COOKIE_SECURE = process.env.COOKIE_SECURE !== undefined
+  ? process.env.COOKIE_SECURE === 'true'
+  : IS_PRODUCTION;
 
 const app = express();
 // Required so express-session/rate-limit see the real client IP and scheme
@@ -48,10 +55,8 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    // Secure cookies require HTTPS. Only enabled in production (behind
-    // Caddy's TLS) — off for local http://127.0.0.1 development, where
-    // there is no HTTPS to require.
-    secure: IS_PRODUCTION,
+    // Secure cookies require HTTPS. See COOKIE_SECURE above.
+    secure: COOKIE_SECURE,
     sameSite: 'strict',
     maxAge: 12 * 60 * 60 * 1000, // 12h
   },
@@ -189,9 +194,11 @@ app.get('/api/withdraw-arrival', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-// Always bind to loopback only, even in production — a public reverse
-// proxy (Caddy) is what actually faces the internet and forwards here.
-// This process should never be directly reachable from any network.
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Hyperliquid USDC withdraw UI: http://127.0.0.1:${PORT} (localhost only)`);
+// Defaults to loopback only — a reverse proxy is meant to be the thing
+// actually facing the network. Set BIND_HOST=0.0.0.0 to make this process
+// itself directly reachable from the network instead (e.g. IP:port access
+// with no reverse proxy in front) — only do this deliberately.
+const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
+app.listen(PORT, BIND_HOST, () => {
+  console.log(`Hyperliquid USDC withdraw UI listening on ${BIND_HOST}:${PORT}`);
 });
