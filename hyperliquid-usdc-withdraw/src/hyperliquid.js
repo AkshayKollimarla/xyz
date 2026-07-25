@@ -29,6 +29,40 @@ function getClients(wallet) {
   return { info, exchange, transport };
 }
 
+// Native, Circle-issued USDC on Arbitrum One. Confirmed live against the
+// real contract (unlike Hyperliquid's internal per-token identifiers, this
+// is a stable public contract address, safe to hardcode).
+const ARBITRUM_USDC_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
+const ERC20_TRANSFER_ABI = ['event Transfer(address indexed from, address indexed to, uint256 value)'];
+
+function getArbitrumProvider() {
+  return new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc');
+}
+
+// Checks whether a withdrawal has actually landed on Arbitrum yet, by
+// looking for an incoming USDC Transfer to `destination` on or after
+// `sinceBlock`. This is independent verification (reads Arbitrum directly)
+// rather than trusting that Hyperliquid accepting the withdraw3 action means
+// funds have arrived — the bridge step takes a few minutes and can be
+// checked for separately.
+async function checkWithdrawalArrival({ destination, sinceBlock }) {
+  const provider = getArbitrumProvider();
+  const contract = new ethers.Contract(ARBITRUM_USDC_ADDRESS, ERC20_TRANSFER_ABI, provider);
+  const events = await contract.queryFilter(contract.filters.Transfer(null, destination), sinceBlock, 'latest');
+
+  if (events.length === 0) {
+    return { found: false };
+  }
+
+  const last = events[events.length - 1];
+  return {
+    found: true,
+    txHash: last.transactionHash,
+    blockNumber: last.blockNumber,
+    amount: ethers.formatUnits(last.args.value, 6),
+  };
+}
+
 // HIP-3 dexes (e.g. "xyz" in the Hyperliquid frontend's "Perps (xyz)" row)
 // are separate balance buckets from the main Perps dex. List any dex names
 // your accounts use in EXTRA_PERP_DEXES (comma-separated) — applied to every
@@ -156,10 +190,15 @@ async function withdraw({ wallet, destination, amount }) {
     throw new Error('Nothing to withdraw (withdrawable balance is 0)');
   }
 
+  // Captured *before* submitting, so the arrival check below never misses a
+  // fast-landing transfer.
+  const arbitrumFromBlock = await getArbitrumProvider().getBlockNumber();
+
   const result = await exchange.withdraw3({ destination: dest, amount: amt });
   return {
     destination: dest,
     amount: amt,
+    arbitrumFromBlock,
     movedFromSpot: moved.spot,
     movedFromDexes: moved.dexes,
     result,
@@ -328,5 +367,6 @@ module.exports = {
   closeAllPositions,
   closeAllPositionsAllAccounts,
   closeAllAndWithdrawAll,
+  checkWithdrawalArrival,
   getAccounts,
 };

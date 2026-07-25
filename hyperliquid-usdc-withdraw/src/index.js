@@ -8,6 +8,7 @@ const {
   previewCloseAllAccounts,
   closeAllPositions,
   closeAllAndWithdrawAll,
+  checkWithdrawalArrival,
   getAccounts,
 } = require('./hyperliquid');
 
@@ -77,6 +78,20 @@ app.post('/api/close-all-and-withdraw', async (req, res) => {
   try {
     const { destination } = req.body || {};
     res.json(await closeAllAndWithdrawAll({ destination }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Independent, on-chain check of whether a withdrawal has actually arrived
+// on Arbitrum yet — polled by the frontend after a withdrawal is accepted.
+app.get('/api/withdraw-arrival', async (req, res) => {
+  try {
+    const { destination, fromBlock } = req.query;
+    if (!destination || !fromBlock) {
+      throw new Error('destination and fromBlock are required');
+    }
+    res.json(await checkWithdrawalArrival({ destination, sinceBlock: Number(fromBlock) }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

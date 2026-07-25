@@ -53,6 +53,15 @@
   .addr { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
   .spot-note { margin-top: 6px; font-size: 12px; color: var(--warn); }
   .big-warn { background: #2a1212; border: 1px solid var(--danger); color: #ffb3b3; }
+  .status-box {
+    margin-top: 10px; padding: 10px 12px; border-radius: 6px; font-size: 13px;
+    border: 1px solid var(--border); line-height: 1.5;
+  }
+  .status-box a { color: inherit; text-decoration: underline; }
+  .status-box.status-pending { background: #1a2233; border-color: var(--accent); color: #cfe0ff; }
+  .status-box.status-ok { background: #0f2a1c; border-color: var(--ok); color: #b7f5cf; }
+  .status-box.status-err { background: #2a1212; border-color: var(--danger); color: #ffb3b3; }
+  .status-box.status-warn { background: #2a1a12; border-color: var(--warn); color: #ffd699; }
 </style>
 </head>
 <body>
@@ -88,6 +97,7 @@
     <label>Destination Address</label>
     <input type="text" id="flattenDestAddr" placeholder="0x...">
     <button id="btnFlattenAll" class="danger">Flat All &amp; Withdraw Everything (All Accounts)</button>
+    <div id="flattenStatus"></div>
   </div>
 
   <div class="card">
@@ -102,6 +112,7 @@
     <input type="text" id="amount" placeholder="e.g. 100">
 
     <button id="btnWithdraw" class="danger">Withdraw</button>
+    <div class="status-box" id="withdrawStatus" style="display:none;"></div>
 
     <div class="log" id="log"></div>
   </div>
@@ -118,6 +129,48 @@ function log(msg, cls) {
 }
 
 let lastStatus = null;
+
+function setStatusBox(elOrContainer, state, message, append) {
+  const box = append ? document.createElement('div') : elOrContainer;
+  box.className = 'status-box status-' + state;
+  const icon = { pending: '⏳', ok: '✅', err: '❌', warn: '⚠️' }[state] || '';
+  box.innerHTML = `${icon} ${message}`;
+  box.style.display = 'block';
+  if (append) elOrContainer.appendChild(box);
+  return box;
+}
+
+// Independently verifies (via a direct Arbitrum on-chain check, not just
+// "Hyperliquid accepted the request") whether a withdrawal has actually
+// landed, and updates the given status box as it goes.
+async function pollArrival({ destination, fromBlock, statusBox, label }) {
+  const maxAttempts = 40; // ~10 minutes at 15s intervals — generous over the ~5 min typical time
+  const intervalMs = 15000;
+  const prefix = label ? `${label}: ` : '';
+
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    try {
+      const res = await fetch(`/api/withdraw-arrival?destination=${encodeURIComponent(destination)}&fromBlock=${fromBlock}`);
+      const data = await res.json();
+      if (data.error) {
+        setStatusBox(statusBox, 'err', `${prefix}Arrival check failed: ${data.error}`);
+        return;
+      }
+      if (data.found) {
+        setStatusBox(
+          statusBox, 'ok',
+          `${prefix}Confirmed arrived on Arbitrum: ${data.amount} USDC — ` +
+          `<a href="https://arbiscan.io/tx/${data.txHash}" target="_blank" rel="noopener">${data.txHash.slice(0, 10)}…</a>`
+        );
+        return;
+      }
+    } catch (e) {
+      // transient network error — keep polling, don't give up on one blip
+    }
+  }
+  setStatusBox(statusBox, 'warn', `${prefix}Not yet detected on Arbitrum after ~10 minutes. Check the destination address on Arbiscan manually.`);
+}
 
 function accountTotal(acc) {
   let total = Number(acc.perpWithdrawable) + Number(acc.spotUsdc);
@@ -288,6 +341,10 @@ el('btnFlattenAll').addEventListener('click', async () => {
     return;
   }
 
+  const statusContainer = el('flattenStatus');
+  statusContainer.innerHTML = '';
+  const overallBox = setStatusBox(statusContainer, 'pending', 'Closing positions and withdrawing on all accounts...', true);
+
   el('btnFlattenAll').disabled = true;
   try {
     log('Closing all positions on all accounts...');
@@ -298,17 +355,25 @@ el('btnFlattenAll').addEventListener('click', async () => {
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
+    overallBox.remove();
 
     data.closeResults.forEach((r) => {
       log(`Closed ${r.closed.length} position(s) for ${r.accountId} on ${r.dex || 'main'}.`, 'ok');
     });
     data.withdrawResults.forEach((r) => {
       log(`Withdrew ${r.amount} USDC from ${r.accountId} to ${r.destination}.`, 'ok');
+      const box = setStatusBox(
+        statusContainer, 'pending',
+        `${r.accountId}: accepted by Hyperliquid — ${r.amount} USDC to ${r.destination}. Verifying arrival on Arbitrum (~5 min)...`,
+        true
+      );
+      pollArrival({ destination: r.destination, fromBlock: r.arbitrumFromBlock, statusBox: box, label: r.accountId });
     });
-    log('All withdrawals submitted — should land on Arbitrum in a few minutes.', 'warn');
+    log('All withdrawals submitted.', 'warn');
     await refresh();
   } catch (e) {
     log('Error in flatten-all: ' + e.message, 'err');
+    setStatusBox(overallBox, 'err', 'Flatten-all failed: ' + e.message);
   } finally {
     el('btnFlattenAll').disabled = false;
   }
@@ -333,7 +398,9 @@ el('btnWithdraw').addEventListener('click', async () => {
     `This is irreversible. Continue?`;
   if (!window.confirm(confirmMsg)) return;
 
+  const statusBox = el('withdrawStatus');
   el('btnWithdraw').disabled = true;
+  setStatusBox(statusBox, 'pending', `Submitting withdrawal (${account})...`);
   try {
     log(`Submitting withdrawal (${account})...`);
     const res = await fetch('/api/withdraw', {
@@ -350,10 +417,12 @@ el('btnWithdraw').addEventListener('click', async () => {
       log(`Swept ${amt} USDC from Perps (${dex}) into main Perps first.`, 'ok');
     });
     log(`Withdrawal submitted: ${data.amount} USDC to ${data.destination}`, 'ok');
-    log('It should land on Arbitrum in a few minutes.', 'warn');
+    setStatusBox(statusBox, 'pending', `Accepted by Hyperliquid: ${data.amount} USDC to ${data.destination}. Verifying arrival on Arbitrum (~5 min)...`);
     await refresh();
+    pollArrival({ destination: data.destination, fromBlock: data.arbitrumFromBlock, statusBox });
   } catch (e) {
     log('Error: ' + e.message, 'err');
+    setStatusBox(statusBox, 'err', 'Withdrawal failed: ' + e.message);
   } finally {
     el('btnWithdraw').disabled = false;
   }

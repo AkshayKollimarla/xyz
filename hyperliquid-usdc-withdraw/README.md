@@ -96,6 +96,30 @@ potentially two accounts, plus two withdrawals), so it requires typing the
 literal phrase `FLATTEN ALL` into a prompt that lists every position to be
 closed and each account's approximate balance before it does anything.
 
+## Withdrawal confirmation
+
+Hyperliquid accepting a `withdraw3` action only means the *request* was
+valid — the actual funds take a few minutes to bridge to Arbitrum. Every
+withdrawal (manual or via Flat All) is followed by an independent, direct
+Arbitrum check: after submitting, the tool records the current Arbitrum
+block, then polls every 15s for an incoming USDC transfer to the
+destination address on or after that block.
+
+A status box shows the live state:
+- **Pending** (blue) — accepted by Hyperliquid, waiting for it to land
+- **Confirmed** (green) — found on-chain, with the amount and a direct
+  Arbiscan link to the transaction
+- **Failed** (red) — the withdrawal request itself was rejected, with the
+  actual error message
+- **Not yet detected** (yellow) — after ~10 minutes of polling with no
+  match; not necessarily a failure, just slower than usual — check
+  Arbiscan directly
+
+This check is real (queries Arbitrum's chain, not just re-reading
+Hyperliquid's own response), so "Confirmed" here means the money is
+actually sitting at the destination address, verified independently of
+Hyperliquid.
+
 ## Security notes
 
 - The private key is read once from `.env` on the server process and never
