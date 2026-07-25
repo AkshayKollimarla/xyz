@@ -40,6 +40,12 @@ function getExtraDexNames() {
     .filter(Boolean);
 }
 
+// Every dex a position check should cover: the main Perps dex ("") plus
+// any configured HIP-3 dexes.
+function getAllPositionDexNames() {
+  return ['', ...getExtraDexNames()];
+}
+
 async function getAccountStatus(wallet) {
   const { info } = getClients(wallet);
   const extraDexNames = getExtraDexNames();
@@ -209,11 +215,11 @@ async function previewCloseAll(wallet, dex) {
 // open positions (or errored while checking).
 async function previewCloseAllAccounts() {
   const accounts = getAccounts();
-  const extraDexNames = getExtraDexNames();
+  const dexNames = getAllPositionDexNames();
   const results = [];
 
   for (const acc of accounts) {
-    for (const dex of extraDexNames) {
+    for (const dex of dexNames) {
       try {
         const preview = await previewCloseAll(acc.wallet, dex);
         if (preview.positions.length > 0) {
@@ -235,10 +241,14 @@ async function previewCloseAllAccounts() {
 async function closeAllPositions(wallet, { dex, slippage = 0.02 }) {
   const { info, exchange, transport } = getClients(wallet);
 
+  // Main-dex assets are always loaded by SymbolConverter by default; passing
+  // "" as a builder-dex name would be wrong, so only pass dexs for HIP-3.
+  const converterOpts = dex ? { transport, dexs: [dex] } : { transport };
+
   const [state, mids, converter] = await Promise.all([
     info.clearinghouseState({ user: wallet.address, dex }),
     info.allMids({ dex }),
-    SymbolConverter.create({ transport, dexs: [dex] }),
+    SymbolConverter.create(converterOpts),
   ]);
 
   const orders = [];
@@ -282,11 +292,11 @@ async function closeAllPositions(wallet, { dex, slippage = 0.02 }) {
 // EXTRA_PERP_DEXES dex. Does not withdraw anything.
 async function closeAllPositionsAllAccounts() {
   const accounts = getAccounts();
-  const extraDexNames = getExtraDexNames();
+  const dexNames = getAllPositionDexNames();
   const results = [];
 
   for (const acc of accounts) {
-    for (const dex of extraDexNames) {
+    for (const dex of dexNames) {
       const positions = await getPositions(acc.wallet, dex);
       if (positions.length === 0) continue;
       const r = await closeAllPositions(acc.wallet, { dex });
