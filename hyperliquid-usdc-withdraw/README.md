@@ -79,10 +79,17 @@ dex.
 Clicking it does **not** close anything immediately — it shows every
 position that will be closed and the total P&L that will be realized, and
 requires typing `CLOSE` into a prompt to proceed. Confirming places
-reduce-only IOC (immediate-or-cancel) orders at a slippage-padded price for
-each position, which closes them and frees their margin back into that
-dex's withdrawable balance. It does not withdraw anything itself — run a
-withdrawal afterward to move the newly-freed balance out.
+reduce-only market orders (`FrontendMarket` tif — immediate-fill-or-cancel)
+at a slippage-padded price for each position.
+
+Market orders on a thin HIP-3 order book aren't guaranteed to fully fill in
+one shot, so this doesn't just trust the order response: after submitting,
+it re-reads the actual position state from Hyperliquid, and retries
+anything still open at a more aggressive price (2% → 5% → 10% slippage, up
+to 3 attempts). The result reports `fullyClosed: true/false` and, if
+anything is still open after all retries, exactly which position and size
+remain — instead of assuming success. It does not withdraw anything
+itself — run a withdrawal afterward to move the newly-freed balance out.
 
 ## Flat all positions & withdraw everything (both accounts)
 
@@ -95,6 +102,13 @@ This is the most consequential action in the tool (real trades on
 potentially two accounts, plus two withdrawals), so it requires typing the
 literal phrase `FLATTEN ALL` into a prompt that lists every position to be
 closed and each account's approximate balance before it does anything.
+
+Withdrawing always proceeds regardless of close outcome — it only ever
+moves the currently-free balance, so a position that didn't fully close
+just means less gets withdrawn, never something wrong. But if any position
+didn't fully close after retries, a red status box lists exactly which
+account/dex/position is still open, so it's never silently misreported as
+fully flat.
 
 ## Withdrawal confirmation
 

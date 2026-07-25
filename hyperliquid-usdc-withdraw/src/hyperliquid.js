@@ -273,11 +273,12 @@ async function previewCloseAllAccounts() {
   return results;
 }
 
-// Closes every open position on `dex` (for one account/wallet) with
-// reduce-only IOC orders at an aggressive (slippage-padded) price, freeing
-// their margin back into that dex's withdrawable balance. Does NOT withdraw
-// or sweep anything itself.
-async function closeAllPositions(wallet, { dex, slippage = 0.02 }) {
+// Submits one round of market-order closes for whatever is currently open
+// on `dex`, at a given slippage buffer. Returns the orders submitted (not
+// whether they actually filled — that's verified separately by re-reading
+// position state, since Hyperliquid's order response isn't treated as
+// sufficient proof on its own).
+async function submitCloseOrders(wallet, dex, slippage) {
   const { info, exchange, transport } = getClients(wallet);
 
   // Main-dex assets are always loaded by SymbolConverter by default; passing
@@ -315,16 +316,54 @@ async function closeAllPositions(wallet, { dex, slippage = 0.02 }) {
       p: roundPrice(aggressivePrice, szDecimals),
       s: Math.abs(szi).toFixed(szDecimals),
       r: true,
-      t: { limit: { tif: 'Ioc' } },
+      // "FrontendMarket" = same immediate-fill-or-cancel execution as "Ioc",
+      // but tagged as a market order (matches what was actually requested,
+      // and shows correctly as "Market" in Hyperliquid's own trade history).
+      t: { limit: { tif: 'FrontendMarket' } },
     });
   }
 
   if (orders.length === 0) {
-    return { dex, closed: [], result: null };
+    return { orders: [], result: null };
   }
 
   const result = await exchange.order({ orders, grouping: 'na' });
-  return { dex, closed: orders, result };
+  return { orders, result };
+}
+
+// Escalating slippage per retry — a thin book that won't fill at 2% might
+// fill at 5% or 10%. This is a deliberate "get it closed" market order, not
+// a price-sensitive limit order.
+const CLOSE_SLIPPAGE_STEPS = [0.02, 0.05, 0.10];
+
+// Closes every open position on `dex` (for one account/wallet) with
+// reduce-only market orders, freeing their margin back into that dex's
+// withdrawable balance. Does NOT withdraw or sweep anything itself.
+//
+// IOC/market orders on a thin book aren't guaranteed to fully fill in one
+// shot, so this doesn't trust the order response — after each attempt it
+// re-reads the actual position state from Hyperliquid and retries anything
+// still open (at a more aggressive price) up to CLOSE_SLIPPAGE_STEPS.length
+// times. The final result reports exactly what, if anything, is still open
+// rather than assuming success.
+async function closeAllPositions(wallet, { dex }) {
+  const allOrders = [];
+  let remaining = await getPositions(wallet, dex);
+
+  for (let attempt = 0; attempt < CLOSE_SLIPPAGE_STEPS.length && remaining.length > 0; attempt++) {
+    const { orders } = await submitCloseOrders(wallet, dex, CLOSE_SLIPPAGE_STEPS[attempt]);
+    allOrders.push(...orders);
+
+    await sleep(1500); // let the fill settle before re-checking real position state
+    remaining = await getPositions(wallet, dex);
+  }
+
+  return {
+    dex,
+    closed: allOrders,
+    fullyClosed: remaining.length === 0,
+    remainingPositions: remaining,
+  };
 }
 
 // Closes every open position across every configured account and every
@@ -355,7 +394,13 @@ async function closeAllAndWithdrawAll({ destination } = {}) {
     await sleep(2000); // let fills settle before sweeping/withdrawing
   }
   const withdrawResults = await withdrawAllAccounts({ destination });
-  return { closeResults, withdrawResults };
+
+  // Withdraw only ever moves the currently-free balance, so it's always
+  // safe to run regardless — but if something didn't actually close, the
+  // caller needs to know clearly rather than assume everything is flat.
+  const incompleteCloses = closeResults.filter((r) => r.fullyClosed === false);
+
+  return { closeResults, withdrawResults, incompleteCloses };
 }
 
 module.exports = {

@@ -77,7 +77,7 @@
     - The destination address can be <b>any</b> address — Hyperliquid's withdraw action lets you specify it directly.<br>
     - Withdrawals only pull from an account's main <b>Perps</b> balance. Spot and any HIP-3 dex balance (<span class="addr">EXTRA_PERP_DEXES</span>) are swept into Perps first automatically.<br>
     - There is a small (~$1) withdrawal fee per account, and it takes a few minutes to land on Arbitrum.<br>
-    - Open positions on a HIP-3 dex lock margin until closed — this tool can show them and close them with reduce-only market orders. Closing requires typing a confirmation phrase, since it realizes P&amp;L and executes real trades.<br>
+    - Open positions on a HIP-3 dex lock margin until closed — this tool can show them and close them with reduce-only market orders. Closing requires typing a confirmation phrase, since it realizes P&amp;L and executes real trades. Market orders on thin books aren't guaranteed to fully fill in one shot, so the tool re-checks the actual position afterward and retries at a more aggressive price (up to 3 attempts) — and reports exactly what's still open if it truly can't fill, rather than assuming success.<br>
     - Double-check the destination address before confirming. All of this is irreversible.
   </div>
 
@@ -298,6 +298,14 @@ async function flatAllPositions(account, dex) {
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     log(`Close orders submitted for ${account}/${dex || 'main'}: ${data.closed.length} order(s).`, 'ok');
+    if (data.fullyClosed) {
+      log(`Confirmed fully closed (re-checked live position state).`, 'ok');
+    } else {
+      const remainingLines = data.remainingPositions
+        .map((p) => `${p.coin}: ${p.side} ${Math.abs(Number(p.size))}`)
+        .join(', ');
+      log(`NOT fully closed after retries — still open: ${remainingLines}`, 'err');
+    }
     await refresh();
   } catch (e) {
     log('Error closing positions: ' + e.message, 'err');
@@ -358,8 +366,19 @@ el('btnFlattenAll').addEventListener('click', async () => {
     overallBox.remove();
 
     data.closeResults.forEach((r) => {
-      log(`Closed ${r.closed.length} position(s) for ${r.accountId} on ${r.dex || 'main'}.`, 'ok');
+      log(`Closed ${r.closed.length} position(s) for ${r.accountId} on ${r.dex || 'main'} — fully closed: ${r.fullyClosed}.`, r.fullyClosed ? 'ok' : 'err');
     });
+
+    if (data.incompleteCloses && data.incompleteCloses.length > 0) {
+      const lines = data.incompleteCloses
+        .map((r) => {
+          const remaining = r.remainingPositions.map((p) => `${p.coin} ${p.side} ${Math.abs(Number(p.size))}`).join(', ');
+          return `${r.accountId} (${r.dex || 'main'}): ${remaining}`;
+        })
+        .join('<br>');
+      setStatusBox(statusContainer, 'err', `Some positions did NOT fully close after retries — still open:<br>${lines}`, true);
+    }
+
     data.withdrawResults.forEach((r) => {
       log(`Withdrew ${r.amount} USDC from ${r.accountId} to ${r.destination}.`, 'ok');
       const box = setStatusBox(
