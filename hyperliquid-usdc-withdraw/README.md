@@ -33,8 +33,13 @@ cp .env.example .env
 
 Edit `.env`:
 - `PRIVATE_KEY` — your Hyperliquid master account private key
+- `PRIVATE_KEY_2` — optional, a second account's master private key. If set, its balance/positions show alongside the first, and both withdraw to the same `DESTINATION_ADDRESS`.
 - `DESTINATION_ADDRESS` — default destination (optional; can be overridden per-withdrawal in the UI)
-- `EXTRA_PERP_DEXES` — optional, comma-separated HIP-3 dex names (e.g. `xyz`) if your account holds balance in one, shown as `Perps (<name>)` in the Hyperliquid frontend
+- `EXTRA_PERP_DEXES` — optional, comma-separated HIP-3 dex names (e.g. `xyz`) if either account holds balance in one, shown as `Perps (<name>)` in the Hyperliquid frontend
+
+**Real values go in `.env` only — never in `.env.example`.** `.env` is
+gitignored; `.env.example` is committed to the repo, so a real key typed
+into it risks getting pushed.
 
 ## Run
 
@@ -45,12 +50,13 @@ npm start
 Open `http://127.0.0.1:3001`. The server only ever binds to localhost — it
 is never reachable from the network.
 
-The page shows:
-- Your account address, current withdrawable (Perps) balance, Spot USDC
-  balance, and any HIP-3 dex balances listed in `EXTRA_PERP_DEXES`
-- A form to withdraw a specific amount (or your entire balance, if left
-  blank) to any destination address, with a confirmation prompt before
-  submitting
+The page shows, per configured account:
+- Address, current withdrawable (Perps) balance, Spot USDC balance, and any
+  HIP-3 dex balances listed in `EXTRA_PERP_DEXES`
+- A manual withdraw form for account 1 (specific amount, or your entire
+  balance if left blank), with a confirmation prompt before submitting
+- If any account has open positions, a combined **Flat All Positions (All
+  Accounts) & Withdraw Everything** action (see below)
 
 Withdrawals only pull from the main **Perps** balance. Every withdrawal
 automatically sweeps Spot USDC into Perps first (`usdClassTransfer`), and
@@ -77,6 +83,18 @@ reduce-only IOC (immediate-or-cancel) orders at a slippage-padded price for
 each position, which closes them and frees their margin back into that
 dex's withdrawable balance. It does not withdraw anything itself — run a
 withdrawal afterward to move the newly-freed balance out.
+
+## Flat all positions & withdraw everything (both accounts)
+
+When any configured account has open positions, the page shows a combined
+action: for **every** account, it closes all open positions, sweeps Spot +
+any HIP-3 dex balance into Perps, then withdraws the entire resulting
+balance — all to the **same destination address** you enter.
+
+This is the most consequential action in the tool (real trades on
+potentially two accounts, plus two withdrawals), so it requires typing the
+literal phrase `FLATTEN ALL` into a prompt that lists every position to be
+closed and each account's approximate balance before it does anything.
 
 ## Security notes
 

@@ -2,25 +2,37 @@ const { ethers } = require('ethers');
 const hl = require('@nktkas/hyperliquid');
 const { SymbolConverter } = require('@nktkas/hyperliquid/utils');
 
-function getWallet() {
-  const pk = process.env.PRIVATE_KEY;
-  if (!pk || pk.includes('yourmasteraccountprivatekeyhere')) {
-    throw new Error('PRIVATE_KEY is not set in .env');
+// Supports up to two accounts: PRIVATE_KEY (required) and an optional
+// PRIVATE_KEY_2. Every function below is parametrized by wallet so it works
+// the same for either account; the "AllAccounts" wrappers loop over
+// whichever accounts are actually configured.
+function getAccounts() {
+  const candidates = [
+    { id: 'account1', pk: process.env.PRIVATE_KEY },
+    { id: 'account2', pk: process.env.PRIVATE_KEY_2 },
+  ].filter((a) => a.pk && !a.pk.includes('yourmasteraccountprivatekeyhere'));
+
+  if (candidates.length === 0) {
+    throw new Error('No PRIVATE_KEY configured in .env');
   }
-  return new ethers.Wallet(pk.startsWith('0x') ? pk : `0x${pk}`);
+
+  return candidates.map(({ id, pk }) => ({
+    id,
+    wallet: new ethers.Wallet(pk.startsWith('0x') ? pk : `0x${pk}`),
+  }));
 }
 
-function getClients() {
-  const wallet = getWallet();
+function getClients(wallet) {
   const transport = new hl.HttpTransport();
   const info = new hl.InfoClient({ transport });
   const exchange = new hl.ExchangeClient({ transport, wallet });
-  return { wallet, info, exchange, transport };
+  return { info, exchange, transport };
 }
 
 // HIP-3 dexes (e.g. "xyz" in the Hyperliquid frontend's "Perps (xyz)" row)
 // are separate balance buckets from the main Perps dex. List any dex names
-// your account uses in EXTRA_PERP_DEXES (comma-separated) to see them here.
+// your accounts use in EXTRA_PERP_DEXES (comma-separated) — applied to every
+// configured account; a dex an account doesn't use just shows as empty.
 function getExtraDexNames() {
   return (process.env.EXTRA_PERP_DEXES || '')
     .split(',')
@@ -28,8 +40,8 @@ function getExtraDexNames() {
     .filter(Boolean);
 }
 
-async function getStatus() {
-  const { wallet, info } = getClients();
+async function getAccountStatus(wallet) {
+  const { info } = getClients(wallet);
   const extraDexNames = getExtraDexNames();
 
   const [perp, spot, ...extraPerps] = await Promise.all([
@@ -52,6 +64,15 @@ async function getStatus() {
       withdrawable: extraPerps[i].error ? null : extraPerps[i].withdrawable,
       error: extraPerps[i].error || null,
     })),
+  };
+}
+
+async function getStatus() {
+  const accounts = getAccounts();
+  const statuses = await Promise.all(accounts.map((a) => getAccountStatus(a.wallet)));
+
+  return {
+    accounts: accounts.map((a, i) => ({ id: a.id, ...statuses[i] })),
     defaultDestination: process.env.DESTINATION_ADDRESS || null,
   };
 }
@@ -73,7 +94,7 @@ async function getUsdcSpotToken(info) {
 // Hyperliquid withdrawals only ever pull from the main Perps USDC balance —
 // not Spot, and not any HIP-3 dex (EXTRA_PERP_DEXES) balance. So a "withdraw
 // everything" needs to sweep both of those into main Perps first.
-async function sweepToMainPerp(exchange, info, wallet) {
+async function sweepToMainPerp(wallet, exchange, info) {
   const moved = { spot: '0', dexes: {} };
 
   const spot = await info.spotClearinghouseState({ user: wallet.address });
@@ -110,15 +131,15 @@ async function sweepToMainPerp(exchange, info, wallet) {
   return moved;
 }
 
-async function withdraw({ destination, amount }) {
-  const { exchange, info, wallet } = getClients();
+async function withdraw({ wallet, destination, amount }) {
+  const { exchange, info } = getClients(wallet);
 
   const dest = destination || process.env.DESTINATION_ADDRESS;
   if (!dest) {
     throw new Error('No destination address provided or configured in .env');
   }
 
-  const moved = await sweepToMainPerp(exchange, info, wallet);
+  const moved = await sweepToMainPerp(wallet, exchange, info);
 
   let amt = amount;
   if (!amt) {
@@ -139,6 +160,18 @@ async function withdraw({ destination, amount }) {
   };
 }
 
+// Withdraws every configured account's entire balance to the same
+// destination address, one account at a time.
+async function withdrawAllAccounts({ destination } = {}) {
+  const accounts = getAccounts();
+  const results = [];
+  for (const acc of accounts) {
+    const r = await withdraw({ wallet: acc.wallet, destination });
+    results.push({ accountId: acc.id, address: acc.wallet.address, ...r });
+  }
+  return results;
+}
+
 // Hyperliquid perp price rule: at most 5 significant figures, and at most
 // (6 - szDecimals) decimal places for perps. Integer prices are always valid.
 function roundPrice(price, szDecimals) {
@@ -150,8 +183,8 @@ function roundPrice(price, szDecimals) {
   return String(Number(fiveSigFigs.toFixed(maxDecimals)));
 }
 
-async function getPositions(dex) {
-  const { wallet, info } = getClients();
+async function getPositions(wallet, dex) {
+  const { info } = getClients(wallet);
   const state = await info.clearinghouseState({ user: wallet.address, dex });
 
   return state.assetPositions.map(({ position: p }) => ({
@@ -165,18 +198,42 @@ async function getPositions(dex) {
   }));
 }
 
-async function previewCloseAll(dex) {
-  const positions = await getPositions(dex);
+async function previewCloseAll(wallet, dex) {
+  const positions = await getPositions(wallet, dex);
   const totalUnrealizedPnl = positions.reduce((sum, p) => sum + Number(p.unrealizedPnl), 0);
   return { dex, positions, totalUnrealizedPnl: String(totalUnrealizedPnl) };
 }
 
-// Closes every open position on `dex` with reduce-only IOC orders at an
-// aggressive (slippage-padded) price, freeing their margin back into that
-// dex's withdrawable balance. Does NOT withdraw or sweep anything itself —
-// call withdraw() separately afterward once margin is freed.
-async function closeAllPositions({ dex, slippage = 0.02 }) {
-  const { wallet, info, exchange, transport } = getClients();
+// Read-only: previews open positions for every configured account, across
+// every EXTRA_PERP_DEXES dex. Only returns entries that actually have
+// open positions (or errored while checking).
+async function previewCloseAllAccounts() {
+  const accounts = getAccounts();
+  const extraDexNames = getExtraDexNames();
+  const results = [];
+
+  for (const acc of accounts) {
+    for (const dex of extraDexNames) {
+      try {
+        const preview = await previewCloseAll(acc.wallet, dex);
+        if (preview.positions.length > 0) {
+          results.push({ accountId: acc.id, address: acc.wallet.address, ...preview });
+        }
+      } catch (err) {
+        results.push({ accountId: acc.id, address: acc.wallet.address, dex, error: err.message });
+      }
+    }
+  }
+
+  return results;
+}
+
+// Closes every open position on `dex` (for one account/wallet) with
+// reduce-only IOC orders at an aggressive (slippage-padded) price, freeing
+// their margin back into that dex's withdrawable balance. Does NOT withdraw
+// or sweep anything itself.
+async function closeAllPositions(wallet, { dex, slippage = 0.02 }) {
+  const { info, exchange, transport } = getClients(wallet);
 
   const [state, mids, converter] = await Promise.all([
     info.clearinghouseState({ user: wallet.address, dex }),
@@ -221,4 +278,45 @@ async function closeAllPositions({ dex, slippage = 0.02 }) {
   return { dex, closed: orders, result };
 }
 
-module.exports = { getStatus, withdraw, previewCloseAll, closeAllPositions };
+// Closes every open position across every configured account and every
+// EXTRA_PERP_DEXES dex. Does not withdraw anything.
+async function closeAllPositionsAllAccounts() {
+  const accounts = getAccounts();
+  const extraDexNames = getExtraDexNames();
+  const results = [];
+
+  for (const acc of accounts) {
+    for (const dex of extraDexNames) {
+      const positions = await getPositions(acc.wallet, dex);
+      if (positions.length === 0) continue;
+      const r = await closeAllPositions(acc.wallet, { dex });
+      results.push({ accountId: acc.id, address: acc.wallet.address, ...r });
+    }
+  }
+
+  return results;
+}
+
+// Combined action: closes every open position on every account/dex, then
+// sweeps + withdraws each account's entire resulting balance to the same
+// destination address.
+async function closeAllAndWithdrawAll({ destination } = {}) {
+  const closeResults = await closeAllPositionsAllAccounts();
+  if (closeResults.some((r) => r.closed && r.closed.length > 0)) {
+    await sleep(2000); // let fills settle before sweeping/withdrawing
+  }
+  const withdrawResults = await withdrawAllAccounts({ destination });
+  return { closeResults, withdrawResults };
+}
+
+module.exports = {
+  getStatus,
+  withdraw,
+  withdrawAllAccounts,
+  previewCloseAll,
+  previewCloseAllAccounts,
+  closeAllPositions,
+  closeAllPositionsAllAccounts,
+  closeAllAndWithdrawAll,
+  getAccounts,
+};

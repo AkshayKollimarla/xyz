@@ -16,6 +16,7 @@
   }
   .wrap { max-width: 640px; width: 100%; }
   h1 { font-size: 20px; margin-bottom: 4px; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
   .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
   .banner {
     background: #2a1a12; border: 1px solid var(--warn); color: #ffd699;
@@ -23,6 +24,8 @@
   }
   .banner b { color: #fff; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+  .account-block { padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .account-block:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
   label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; margin-top: 12px; }
   label:first-child { margin-top: 0; }
   input[type=text] {
@@ -37,7 +40,7 @@
   button.secondary { background: #2a2f3a; }
   button.danger { background: var(--danger); }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .balances { font-size: 13px; margin-top: 10px; line-height: 1.9; }
+  .balances { font-size: 13px; line-height: 1.9; }
   .balances span.val { font-family: ui-monospace, Consolas, monospace; color: #fff; }
   .log {
     font-family: ui-monospace, Consolas, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;
@@ -48,39 +51,51 @@
   .log .err { color: var(--danger); }
   .log .warn { color: var(--warn); }
   .addr { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
-  .spot-note { display: none; margin-top: 10px; font-size: 12px; color: var(--warn); }
+  .spot-note { margin-top: 6px; font-size: 12px; color: var(--warn); }
+  .big-warn { background: #2a1212; border: 1px solid var(--danger); color: #ffb3b3; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Hyperliquid USDC Withdraw</h1>
-  <div class="subtitle">Local-only tool. Your private key lives only in this machine's <span class="addr">.env</span> file, loaded server-side — it is never sent over the network.</div>
+  <div class="subtitle">Local-only tool. Private keys live only in this machine's <span class="addr">.env</span> file, loaded server-side — never sent over the network.</div>
 
   <div class="banner">
     <b>Read before use:</b><br>
     - Run this only on your own machine (<span class="addr">npm start</span>, then open <span class="addr">http://127.0.0.1:3001</span>). The server binds to localhost only.<br>
-    - The private key must be your Hyperliquid <b>master account</b> key (the one behind MetaMask) — API/agent wallets cannot authorize withdrawals.<br>
-    - The destination address can be <b>any</b> address — Hyperliquid's withdraw action lets you specify it directly, so funds go straight there without an extra Arbitrum-to-Arbitrum hop.<br>
-    - Withdrawals only pull from your main <b>Perps</b> balance. If you also hold USDC in Spot or in a HIP-3 dex listed in <span class="addr">EXTRA_PERP_DEXES</span>, this tool automatically sweeps those into Perps first, so a blank-amount withdrawal really does move everything.<br>
-    - There is a small (~$1) withdrawal fee deducted automatically, and it takes a few minutes to land on Arbitrum.<br>
-    - If a HIP-3 dex has open positions, their margin isn't withdrawable until closed — this tool can show them and place reduce-only market orders to close them all, freeing that margin. This is separate from withdrawing and requires typing a confirmation phrase, since it realizes P&amp;L and executes real trades.<br>
-    - Double-check the destination address before confirming. This is irreversible.
+    - Private keys must be Hyperliquid <b>master account</b> keys (the ones behind MetaMask) — API/agent wallets cannot authorize withdrawals.<br>
+    - Set <span class="addr">PRIVATE_KEY</span> (required) and optionally <span class="addr">PRIVATE_KEY_2</span> in <span class="addr">.env</span> to manage a second account alongside the first. Both share the same destination address.<br>
+    - The destination address can be <b>any</b> address — Hyperliquid's withdraw action lets you specify it directly.<br>
+    - Withdrawals only pull from an account's main <b>Perps</b> balance. Spot and any HIP-3 dex balance (<span class="addr">EXTRA_PERP_DEXES</span>) are swept into Perps first automatically.<br>
+    - There is a small (~$1) withdrawal fee per account, and it takes a few minutes to land on Arbitrum.<br>
+    - Open positions on a HIP-3 dex lock margin until closed — this tool can show them and close them with reduce-only market orders. Closing requires typing a confirmation phrase, since it realizes P&amp;L and executes real trades.<br>
+    - Double-check the destination address before confirming. All of this is irreversible.
   </div>
 
   <div class="card">
-    <div class="balances" id="balances">Loading account status…</div>
-    <div class="addr" id="addrLine"></div>
-    <div class="spot-note" id="spotNote"></div>
+    <div id="accountsBlock">Loading account status…</div>
     <button id="btnRefresh" class="secondary">Refresh</button>
   </div>
 
   <div class="card" id="positionsCard" style="display:none;"></div>
 
+  <div class="card big-warn" id="flattenAllCard" style="display:none;">
+    <h2>Flat All Positions (All Accounts) &amp; Withdraw Everything</h2>
+    <div style="font-size:13px; margin-bottom:8px;">
+      Closes every open position on every configured account, then sweeps and withdraws each account's entire
+      resulting balance to the destination address below. One combined action across all accounts.
+    </div>
+    <label>Destination Address</label>
+    <input type="text" id="flattenDestAddr" placeholder="0x...">
+    <button id="btnFlattenAll" class="danger">Flat All &amp; Withdraw Everything (All Accounts)</button>
+  </div>
+
   <div class="card">
+    <h2>Manual Withdraw (Account 1)</h2>
     <label>Destination Address</label>
     <input type="text" id="destAddr" placeholder="0x...">
 
-    <label>Amount (USDC) — leave blank to withdraw your entire balance (Spot + Perps)</label>
+    <label>Amount (USDC) — leave blank to withdraw this account's entire balance</label>
     <input type="text" id="amount" placeholder="e.g. 100">
 
     <button id="btnWithdraw" class="danger">Withdraw</button>
@@ -101,59 +116,74 @@ function log(msg, cls) {
 
 let lastStatus = null;
 
+function accountTotal(acc) {
+  let total = Number(acc.perpWithdrawable) + Number(acc.spotUsdc);
+  (acc.extraPerpDexes || []).forEach((d) => {
+    if (!d.error) total += Number(d.withdrawable);
+  });
+  return total;
+}
+
 async function refresh() {
-  el('balances').textContent = 'Loading account status…';
-  el('addrLine').textContent = '';
-  el('spotNote').style.display = 'none';
+  el('accountsBlock').textContent = 'Loading account status…';
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     lastStatus = data;
 
-    let html =
-      `Withdrawable (Perps): <span class="val">${data.perpWithdrawable} USDC</span><br>` +
-      `Spot balance: <span class="val">${data.spotUsdc} USDC</span>`;
-    (data.extraPerpDexes || []).forEach((d) => {
-      html += d.error
-        ? `<br>Perps (${d.name}): <span class="val" style="color:var(--danger);">error — ${d.error}</span>`
-        : `<br>Perps (${d.name}): <span class="val">${d.withdrawable} USDC</span>`;
+    let html = '';
+    data.accounts.forEach((acc, i) => {
+      html += `<div class="account-block"><h2>${acc.id}</h2>`;
+      html += `<div class="balances">`;
+      html += `Withdrawable (Perps): <span class="val">${acc.perpWithdrawable} USDC</span><br>`;
+      html += `Spot balance: <span class="val">${acc.spotUsdc} USDC</span>`;
+      (acc.extraPerpDexes || []).forEach((d) => {
+        html += d.error
+          ? `<br>Perps (${d.name}): <span class="val" style="color:var(--danger);">error — ${d.error}</span>`
+          : `<br>Perps (${d.name}): <span class="val">${d.withdrawable} USDC</span>`;
+      });
+      html += `</div>`;
+      html += `<div class="addr">Account: ${acc.address}</div>`;
+      if (Number(acc.spotUsdc) > 0) {
+        html += `<div class="spot-note">Has ${acc.spotUsdc} USDC in Spot — swept into Perps automatically on withdraw.</div>`;
+      }
+      html += `</div>`;
     });
-    el('balances').innerHTML = html;
-    el('addrLine').textContent = 'Account: ' + data.address;
+    el('accountsBlock').innerHTML = html;
 
-    if (Number(data.spotUsdc) > 0) {
-      el('spotNote').style.display = 'block';
-      el('spotNote').textContent =
-        `You have ${data.spotUsdc} USDC in Spot — it will be swept into Perps automatically when you withdraw.`;
+    if (data.defaultDestination) {
+      if (!el('destAddr').value) el('destAddr').value = data.defaultDestination;
+      if (!el('flattenDestAddr').value) el('flattenDestAddr').value = data.defaultDestination;
     }
 
-    if (data.defaultDestination && !el('destAddr').value) {
-      el('destAddr').value = data.defaultDestination;
-    }
+    el('flattenAllCard').style.display = data.accounts.length > 0 ? 'block' : 'none';
 
-    await loadPositions((data.extraPerpDexes || []).filter((d) => !d.error).map((d) => d.name));
+    await loadPositions();
   } catch (e) {
-    el('balances').textContent = 'Failed to load status: ' + e.message;
+    el('accountsBlock').textContent = 'Failed to load status: ' + e.message;
   }
 }
 
-async function loadPositions(dexNames) {
+async function loadPositions() {
   const card = el('positionsCard');
-  if (dexNames.length === 0) {
+  const previews = await fetch('/api/positions-all').then((r) => r.json());
+  if (previews.error) {
+    card.style.display = 'block';
+    card.innerHTML = `<span style="color:var(--danger);">Failed to load positions: ${previews.error}</span>`;
+    return;
+  }
+
+  const withPositions = previews.filter((p) => !p.error && p.positions && p.positions.length > 0);
+  if (withPositions.length === 0) {
     card.style.display = 'none';
     card.innerHTML = '';
     return;
   }
 
-  const perDex = await Promise.all(
-    dexNames.map((dex) => fetch('/api/positions?dex=' + encodeURIComponent(dex)).then((r) => r.json()))
-  );
-
   let html = '';
-  perDex.forEach((preview) => {
-    if (preview.error || !preview.positions || preview.positions.length === 0) return;
-    html += `<div style="margin-bottom:8px;"><b>Open Positions (${preview.dex})</b></div>`;
+  withPositions.forEach((preview) => {
+    html += `<div style="margin-bottom:8px;"><b>Open Positions — ${preview.accountId} (${preview.dex})</b></div>`;
     preview.positions.forEach((p) => {
       const pnlColor = Number(p.unrealizedPnl) < 0 ? 'var(--danger)' : 'var(--ok)';
       html +=
@@ -162,26 +192,20 @@ async function loadPositions(dexNames) {
         `uPnL <span style="color:${pnlColor};">$${Number(p.unrealizedPnl).toFixed(2)}</span></div>`;
     });
     html +=
-      `<div style="font-size:13px; margin-top:6px;">Total unrealized P&amp;L: ` +
+      `<div style="font-size:13px; margin:6px 0;">Total unrealized P&amp;L: ` +
       `<span style="color:${Number(preview.totalUnrealizedPnl) < 0 ? 'var(--danger)' : 'var(--ok)'};">$${Number(preview.totalUnrealizedPnl).toFixed(2)}</span></div>` +
-      `<button class="danger btn-flat-all" data-dex="${preview.dex}">Flat All Positions (${preview.dex})</button>`;
+      `<button class="danger btn-flat-all" data-dex="${preview.dex}" data-account="${preview.accountId}">Flat Positions (${preview.accountId} / ${preview.dex})</button>`;
   });
-
-  if (!html) {
-    card.style.display = 'none';
-    card.innerHTML = '';
-    return;
-  }
 
   card.style.display = 'block';
   card.innerHTML = html;
   card.querySelectorAll('.btn-flat-all').forEach((btn) => {
-    btn.addEventListener('click', () => flatAllPositions(btn.dataset.dex));
+    btn.addEventListener('click', () => flatAllPositions(btn.dataset.account, btn.dataset.dex));
   });
 }
 
-async function flatAllPositions(dex) {
-  const preview = await fetch('/api/positions?dex=' + encodeURIComponent(dex)).then((r) => r.json());
+async function flatAllPositions(account, dex) {
+  const preview = await fetch(`/api/positions?dex=${encodeURIComponent(dex)}&account=${encodeURIComponent(account)}`).then((r) => r.json());
   if (preview.error) { alert('Failed to load positions: ' + preview.error); return; }
   if (!preview.positions.length) { alert('No open positions on ' + dex + '.'); return; }
 
@@ -189,25 +213,25 @@ async function flatAllPositions(dex) {
     .map((p) => `  ${p.coin}: close ${p.side} ${Math.abs(Number(p.size))} (uPnL $${Number(p.unrealizedPnl).toFixed(2)})`)
     .join('\n');
   const confirmMsg =
-    `This will place reduce-only market orders to CLOSE ALL open positions on "${dex}":\n\n${lines}\n\n` +
+    `This will place reduce-only market orders to CLOSE ALL open positions for ${account} on "${dex}":\n\n${lines}\n\n` +
     `Total unrealized P&L to be realized: $${Number(preview.totalUnrealizedPnl).toFixed(2)}\n\n` +
     `This is irreversible and executes real trades. Type CLOSE (all caps) to confirm:`;
   const typed = window.prompt(confirmMsg);
   if (typed !== 'CLOSE') {
-    log('Flat-all cancelled (confirmation text did not match).', 'warn');
+    log('Flat cancelled (confirmation text did not match).', 'warn');
     return;
   }
 
-  log(`Closing all positions on ${dex}...`);
+  log(`Closing all positions for ${account} on ${dex}...`);
   try {
     const res = await fetch('/api/close-positions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dex }),
+      body: JSON.stringify({ dex, account }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    log(`Close orders submitted for ${dex}: ${data.closed.length} order(s).`, 'ok');
+    log(`Close orders submitted for ${account}/${dex}: ${data.closed.length} order(s).`, 'ok');
     await refresh();
   } catch (e) {
     log('Error closing positions: ' + e.message, 'err');
@@ -215,6 +239,67 @@ async function flatAllPositions(dex) {
 }
 
 el('btnRefresh').addEventListener('click', refresh);
+
+el('btnFlattenAll').addEventListener('click', async () => {
+  const destination = el('flattenDestAddr').value.trim();
+  if (!destination) { alert('Enter a destination address.'); return; }
+  if (!lastStatus) { alert('Status not loaded yet — click Refresh first.'); return; }
+
+  const positionsPreview = await fetch('/api/positions-all').then((r) => r.json());
+  const withPositions = Array.isArray(positionsPreview) ? positionsPreview.filter((p) => !p.error && p.positions.length > 0) : [];
+
+  let positionLines = 'None.';
+  if (withPositions.length > 0) {
+    positionLines = withPositions
+      .map((preview) =>
+        `  ${preview.accountId} (${preview.dex}): ${preview.positions.length} position(s), uPnL $${Number(preview.totalUnrealizedPnl).toFixed(2)}`
+      )
+      .join('\n');
+  }
+
+  const accountLines = lastStatus.accounts
+    .map((acc) => `  ${acc.id} (${acc.address}): ~${accountTotal(acc).toFixed(2)} USDC total`)
+    .join('\n');
+
+  const confirmMsg =
+    `This will, for EVERY configured account:\n` +
+    `1. Close ALL open positions (realizing P&L)\n` +
+    `2. Sweep Spot + any HIP-3 dex balance into Perps\n` +
+    `3. Withdraw the entire resulting balance to:\n   ${destination}\n\n` +
+    `Positions to close:\n${positionLines}\n\n` +
+    `Approximate balances (before closing) per account:\n${accountLines}\n\n` +
+    `This is irreversible and executes real trades and transfers. Type FLATTEN ALL (all caps) to confirm:`;
+  const typed = window.prompt(confirmMsg);
+  if (typed !== 'FLATTEN ALL') {
+    log('Flatten-all cancelled (confirmation text did not match).', 'warn');
+    return;
+  }
+
+  el('btnFlattenAll').disabled = true;
+  try {
+    log('Closing all positions on all accounts...');
+    const res = await fetch('/api/close-all-and-withdraw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destination }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    data.closeResults.forEach((r) => {
+      log(`Closed ${r.closed.length} position(s) for ${r.accountId} on ${r.dex}.`, 'ok');
+    });
+    data.withdrawResults.forEach((r) => {
+      log(`Withdrew ${r.amount} USDC from ${r.accountId} to ${r.destination}.`, 'ok');
+    });
+    log('All withdrawals submitted — should land on Arbitrum in a few minutes.', 'warn');
+    await refresh();
+  } catch (e) {
+    log('Error in flatten-all: ' + e.message, 'err');
+  } finally {
+    el('btnFlattenAll').disabled = false;
+  }
+});
 
 el('btnWithdraw').addEventListener('click', async () => {
   const destination = el('destAddr').value.trim();
@@ -224,28 +309,22 @@ el('btnWithdraw').addEventListener('click', async () => {
 
   let amountLabel = amount;
   if (!amountLabel) {
-    let total = null;
-    if (lastStatus) {
-      total = Number(lastStatus.perpWithdrawable) + Number(lastStatus.spotUsdc);
-      (lastStatus.extraPerpDexes || []).forEach((d) => {
-        if (!d.error) total += Number(d.withdrawable);
-      });
-    }
-    amountLabel = `your entire balance (~${total !== null ? total : '?'} USDC, across Spot/Perps/any HIP-3 dexes)`;
+    const acc = lastStatus && lastStatus.accounts[0];
+    amountLabel = `account1's entire balance (~${acc ? accountTotal(acc).toFixed(2) : '?'} USDC, across Spot/Perps/any HIP-3 dexes)`;
   }
   const confirmMsg =
-    `Withdraw ${amountLabel} from Hyperliquid\n` +
+    `Withdraw ${amountLabel} from Hyperliquid (account1)\n` +
     `To: ${destination}\n\n` +
     `This is irreversible. Continue?`;
   if (!window.confirm(confirmMsg)) return;
 
   el('btnWithdraw').disabled = true;
   try {
-    log('Submitting withdrawal...');
+    log('Submitting withdrawal (account1)...');
     const res = await fetch('/api/withdraw', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ destination, amount: amount || undefined }),
+      body: JSON.stringify({ destination, amount: amount || undefined, account: 'account1' }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
