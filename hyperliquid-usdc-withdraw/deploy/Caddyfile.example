@@ -1,0 +1,11 @@
+# Copy to /etc/caddy/Caddyfile on the EC2 instance and replace the domain
+# below with your actual DuckDNS (or other) hostname.
+#
+# Caddy automatically obtains and renews a Let's Encrypt HTTPS certificate
+# for this domain the first time it starts — no manual cert steps needed.
+# It's also the ONLY thing on this box that should ever be reachable from
+# the public internet; the Node app itself binds to 127.0.0.1 only.
+
+yourname-hlwithdraw.duckdns.org {
+	reverse_proxy 127.0.0.1:3001
+}

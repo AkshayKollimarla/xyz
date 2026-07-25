@@ -1,0 +1,32 @@
+# Copy to /etc/systemd/system/hyperliquid-withdraw.service on the EC2
+# instance, adjusting User/WorkingDirectory if your username or clone path
+# differ from the defaults below (assumes user "ubuntu", repo cloned to
+# /home/ubuntu/xyz).
+#
+# After copying:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hyperliquid-withdraw
+#   sudo systemctl status hyperliquid-withdraw
+#   journalctl -u hyperliquid-withdraw -f      # tail logs
+
+[Unit]
+Description=Hyperliquid USDC Withdraw
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/xyz/hyperliquid-usdc-withdraw
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the private keys and session secret are in .env, readable only
+# by this service's user — nothing here needs elevated privileges.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/xyz/hyperliquid-usdc-withdraw
+
+[Install]
+WantedBy=multi-user.target
