@@ -64,6 +64,17 @@ app.use(helmet({
   // https://, which then fails outright since nothing is listening there.
   hsts: COOKIE_SECURE,
 }));
+if (!COOKIE_SECURE) {
+  // Not sending the header from here on isn't enough on its own — a
+  // browser that already received it earlier (e.g. from before this fix,
+  // or from a previous HTTPS deployment of the same host) will keep
+  // enforcing the upgrade for the original max-age. Explicitly telling it
+  // max-age=0 clears that cached policy.
+  app.use((req, res, next) => {
+    res.setHeader('Strict-Transport-Security', 'max-age=0');
+    next();
+  });
+}
 app.use(express.json());
 
 app.use(session({
