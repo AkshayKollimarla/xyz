@@ -40,12 +40,30 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const COOKIE_SECURE = process.env.COOKIE_SECURE !== undefined
   ? process.env.COOKIE_SECURE === 'true'
   : IS_PRODUCTION;
+// Defaults to loopback only — a reverse proxy is meant to be the thing
+// actually facing the network. Set BIND_HOST=0.0.0.0 to make this process
+// itself directly reachable from the network instead (e.g. IP:port access
+// with no reverse proxy in front) — only do this deliberately.
+const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
+// True only in the default (loopback-bind) deployment style, where a
+// reverse proxy like Caddy is expected to be the actual internet-facing
+// hop and sets X-Forwarded-* headers correctly. When bound directly to
+// 0.0.0.0 there's no proxy to trust — trusting client-supplied
+// X-Forwarded-For in that case would let anyone spoof their own IP for
+// rate-limiting purposes.
+const BEHIND_PROXY = BIND_HOST === '127.0.0.1';
 
 const app = express();
-// Required so express-session/rate-limit see the real client IP and scheme
-// when running behind Caddy/nginx, not the proxy's own loopback address.
-app.set('trust proxy', 1);
-app.use(helmet());
+if (BEHIND_PROXY) {
+  app.set('trust proxy', 1);
+}
+app.use(helmet({
+  // HSTS ("always use HTTPS for this host") only makes sense when actually
+  // served over HTTPS. Sending it over plain HTTP breaks the app outright:
+  // browsers honor it by silently upgrading every subsequent fetch() to
+  // https://, which then fails outright since nothing is listening there.
+  hsts: COOKIE_SECURE,
+}));
 app.use(express.json());
 
 app.use(session({
@@ -194,11 +212,6 @@ app.get('/api/withdraw-arrival', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-// Defaults to loopback only — a reverse proxy is meant to be the thing
-// actually facing the network. Set BIND_HOST=0.0.0.0 to make this process
-// itself directly reachable from the network instead (e.g. IP:port access
-// with no reverse proxy in front) — only do this deliberately.
-const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
 app.listen(PORT, BIND_HOST, () => {
   console.log(`Hyperliquid USDC withdraw UI listening on ${BIND_HOST}:${PORT}`);
 });
