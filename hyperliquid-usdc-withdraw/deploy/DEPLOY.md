@@ -27,20 +27,30 @@ the instance once it exists.
      reachable directly, only through Caddy on 443.
 7. Storage: default (8 GB gp3) is fine.
 8. Launch.
-9. **Allocate an Elastic IP** and associate it with the instance (EC2 →
-   Elastic IPs → Allocate → Associate). Without this, the public IP
-   changes every time you stop/start the instance, which would break the
-   DuckDNS hostname below. An Elastic IP is free as long as it's attached
-   to a running instance.
+9. **Allocate an Elastic IP and associate it with the instance BEFORE
+   picking a hostname below** (EC2 → Elastic IPs → Allocate → Associate).
+   Without this, the public IP changes every time you stop/start the
+   instance, which breaks whatever hostname you pick — this bit us in
+   practice: we set up the hostname first, stopped the instance to save
+   cost, and had to redo the DNS/Caddy step from scratch. An Elastic IP is
+   free as long as it's attached to a running instance.
 
-## 2. Point a hostname at it (DuckDNS — free)
+## 2. Point a hostname at the Elastic IP
 
-1. Go to [duckdns.org](https://www.duckdns.org), sign in (GitHub/Google/etc).
-2. Add a subdomain, e.g. `yourname-hlwithdraw` → you get
-   `yourname-hlwithdraw.duckdns.org`.
-3. Set its IP to the Elastic IP from step 1.9.
+Two options, both free:
 
-DNS propagation is usually fast (minutes) but can occasionally take longer.
+- **nip.io (zero signup)** — `<your-elastic-ip-with-dots>.nip.io` (e.g.
+  `13.115.96.251.nip.io`) resolves automatically to that IP, no account or
+  DNS record needed at all. This is what's actually deployed. Simplest
+  option if you don't want an account.
+- **DuckDNS (memorable name)** — sign in at
+  [duckdns.org](https://www.duckdns.org) (GitHub/Google/etc), add a
+  subdomain (e.g. `yourname-hlwithdraw` → `yourname-hlwithdraw.duckdns.org`),
+  set its IP to your Elastic IP.
+
+Either way, use the **Elastic IP**, not the instance's original dynamic
+one — DNS propagation for DuckDNS is usually fast (minutes) but can
+occasionally take longer; nip.io is instant since there's no propagation.
 
 ## 3. Set up the instance
 
@@ -116,10 +126,30 @@ accordingly before enabling it.
 
 ## 7. Test it
 
-From your phone or any browser: `https://yourname-hlwithdraw.duckdns.org`
+From your phone or any browser: `https://your-elastic-ip.nip.io` (or your
+DuckDNS hostname).
 
 You should see the login screen. Log in with `APP_PASSWORD` from the
 server's `.env`.
+
+## If the instance ever gets a new IP anyway
+
+Stopping and starting an instance without an Elastic IP (or losing/
+re-associating the Elastic IP) gives it a new address, which breaks the
+hostname. Fix:
+
+```bash
+# On the server, with the NEW ip:
+sudo tee /etc/caddy/Caddyfile > /dev/null <<'EOF'
+NEW_IP.nip.io {
+	reverse_proxy 127.0.0.1:3001
+}
+EOF
+sudo systemctl reload caddy
+```
+
+Caddy will get a fresh certificate for the new hostname automatically.
+The app itself needs no changes — only Caddy's config references the IP.
 
 ## Updating later
 
@@ -129,6 +159,20 @@ git pull
 npm install
 sudo systemctl restart hyperliquid-withdraw
 ```
+
+## Don't skip Caddy for direct IP:port access
+
+It's tempting to skip steps 2/5 entirely and just open the app's own port
+(e.g. `BIND_HOST=0.0.0.0`, hit a security group hole for it, access via
+`http://ip:3001`). We tried this and it broke in a hard-to-diagnose way:
+helmet's default `Strict-Transport-Security` header, once a browser saw it
+even once, made that browser silently upgrade every subsequent API request
+to `https://` — which then failed outright with no visible error, since
+nothing listens for TLS on that port. Worse, once a browser caches that
+policy it can be very sticky to clear (per-site "Clear & reset" in Chrome
+didn't reliably fix it; a full "Clear browsing data" sometimes didn't
+either). Just use Caddy — it's already installed by step 3, and the
+Caddyfile is one line per hostname.
 
 ## Security checklist before you actually rely on this
 

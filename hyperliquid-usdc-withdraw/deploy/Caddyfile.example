@@ -1,11 +1,16 @@
 # Copy to /etc/caddy/Caddyfile on the EC2 instance and replace the domain
-# below with your actual DuckDNS (or other) hostname.
+# below with your actual hostname: either <elastic-ip-with-dots>.nip.io
+# (zero signup, e.g. 13.115.96.251.nip.io) or a DuckDNS hostname.
 #
 # Caddy automatically obtains and renews a Let's Encrypt HTTPS certificate
 # for this domain the first time it starts — no manual cert steps needed.
 # It's also the ONLY thing on this box that should ever be reachable from
 # the public internet; the Node app itself binds to 127.0.0.1 only.
+#
+# Use your Elastic IP here, not the instance's original dynamic IP — the
+# latter changes on stop/start and this file (plus the cert) would need
+# updating every time.
 
-yourname-hlwithdraw.duckdns.org {
+13.115.96.251.nip.io {
 	reverse_proxy 127.0.0.1:3001
 }
